@@ -2417,7 +2417,7 @@ static void put_cpu_partial(struct kmem_cache *s, struct page *page, int drain)
 	int pages;
 	int pobjects;
 
-	preempt_disable();
+	migrate_disable();
 	do {
 		pages = 0;
 		pobjects = 0;
@@ -2451,7 +2451,7 @@ static void put_cpu_partial(struct kmem_cache *s, struct page *page, int drain)
 	if (unlikely(!slub_cpu_partial(s)))
 		unfreeze_partials(s);
 
-	preempt_enable();
+	migrate_enable();
 #endif	/* CONFIG_SLUB_CPU_PARTIAL */
 }
 
