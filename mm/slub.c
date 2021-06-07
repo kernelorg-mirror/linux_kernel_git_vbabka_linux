@@ -158,7 +158,7 @@
  * We could simply use migrate_disable()/enable() but as long as it's a
  * function call even on !PREEMPT_RT, use inline preempt_disable() there.
  */
-#ifdef CONFIG_PREEMPT_RT
+#ifndef CONFIG_PREEMPT_RT
 #define slub_get_cpu_ptr(var)	get_cpu_ptr(var)
 #define slub_put_cpu_ptr(var)	put_cpu_ptr(var)
 #else
@@ -433,12 +433,12 @@ __slab_unlock(struct page *page, unsigned long *flags, bool disable_irqs)
 static __always_inline void
 slab_lock(struct page *page, unsigned long *flags)
 {
-	__slab_lock(page, flags, IS_ENABLED(CONFIG_PREEMPT_RT));
+	__slab_lock(page, flags, !IS_ENABLED(CONFIG_PREEMPT_RT));
 }
 
 static __always_inline void slab_unlock(struct page *page, unsigned long *flags)
 {
-	__slab_unlock(page, flags, IS_ENABLED(CONFIG_PREEMPT_RT));
+	__slab_unlock(page, flags, !IS_ENABLED(CONFIG_PREEMPT_RT));
 }
 
 static inline bool ___cmpxchg_double_slab(struct kmem_cache *s, struct page *page,
@@ -493,7 +493,7 @@ static inline bool __cmpxchg_double_slab(struct kmem_cache *s, struct page *page
 {
 	return ___cmpxchg_double_slab(s, page, freelist_old, counters_old,
 				      freelist_new, counters_new, n,
-				      IS_ENABLED(CONFIG_PREEMPT_RT));
+				      !IS_ENABLED(CONFIG_PREEMPT_RT));
 }
 
 static inline bool cmpxchg_double_slab(struct kmem_cache *s, struct page *page,
@@ -3075,7 +3075,7 @@ redo:
 	 * the slow path which uses local_lock. It is still relatively fast if
 	 * there is a suitable cpu freelist.
 	 */
-	if (IS_ENABLED(CONFIG_PREEMPT_RT) ||
+	if (!IS_ENABLED(CONFIG_PREEMPT_RT) ||
 	    unlikely(!object || !page || !node_match(page, node))) {
 		object = __slab_alloc(s, gfpflags, node, addr, c);
 	} else {
@@ -3336,7 +3336,7 @@ redo:
 	barrier();
 
 	if (likely(page == c->page)) {
-#ifndef CONFIG_PREEMPT_RT
+#ifdef CONFIG_PREEMPT_RT
 		void **freelist = READ_ONCE(c->freelist);
 
 		set_freepointer(s, tail_obj, freelist);
