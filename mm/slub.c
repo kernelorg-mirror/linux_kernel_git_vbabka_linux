@@ -2566,15 +2566,13 @@ static inline void unfreeze_partials_cpu(struct kmem_cache *s,
 
 #endif	/* CONFIG_SLUB_CPU_PARTIAL */
 
-static inline void flush_slab(struct kmem_cache *s, struct kmem_cache_cpu *c,
-			      bool lock)
+static inline void flush_slab(struct kmem_cache *s, struct kmem_cache_cpu *c)
 {
 	unsigned long flags;
 	void *freelist;
 	struct page *page;
 
-	if (lock)
-		local_lock_irqsave(&s->cpu_slab->lock, flags);
+	local_lock_irqsave(&s->cpu_slab->lock, flags);
 
 	freelist = c->freelist;
 	page = c->page;
@@ -2583,8 +2581,7 @@ static inline void flush_slab(struct kmem_cache *s, struct kmem_cache_cpu *c,
 	c->freelist = NULL;
 	c->tid = next_tid(c->tid);
 
-	if (lock)
-		local_unlock_irqrestore(&s->cpu_slab->lock, flags);
+	local_unlock_irqrestore(&s->cpu_slab->lock, flags);
 
 	if (page)
 		deactivate_slab(s, page, freelist);
@@ -2595,9 +2592,17 @@ static inline void flush_slab(struct kmem_cache *s, struct kmem_cache_cpu *c,
 static inline void __flush_cpu_slab(struct kmem_cache *s, int cpu)
 {
 	struct kmem_cache_cpu *c = per_cpu_ptr(s->cpu_slab, cpu);
+	struct page *page = c->page;
+	void *freelist = c->freelist;
 
-	if (c->page)
-		flush_slab(s, c, false);
+	c->page = NULL;
+	c->freelist = NULL;
+	c->tid = next_tid(c->tid);
+
+	if (page) {
+		deactivate_slab(s, page, freelist);
+		stat(s, CPUSLAB_FLUSH);
+	}
 
 	unfreeze_partials_cpu(s, c);
 }
@@ -2625,7 +2630,7 @@ static void flush_cpu_slab(struct work_struct *w)
 	c = this_cpu_ptr(s->cpu_slab);
 
 	if (c->page)
-		flush_slab(s, c, true);
+		flush_slab(s, c);
 
 	unfreeze_partials(s);
 }
