@@ -4530,7 +4530,7 @@ size_t __ksize(const void *object)
 		return page_size(page);
 	}
 
-	return slab_ksize(page->slab_cache);
+	return slab_ksize(page_slab(page)->slab_cache);
 }
 EXPORT_SYMBOL(__ksize);
 
