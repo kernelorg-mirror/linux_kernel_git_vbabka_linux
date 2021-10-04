@@ -165,6 +165,8 @@ enum pageflags {
 	/* Remapped by swiotlb-xen. */
 	PG_xen_remapped = PG_owner_priv_1,
 
+	/* SLAB / SLUB / SLOB */
+	PG_pfmemalloc = PG_active,
 	/* SLOB */
 	PG_slob_free = PG_private,
 
@@ -192,6 +194,34 @@ static inline unsigned long _compound_head(const struct page *page)
 }
 
 #define compound_head(page)	((typeof(page))_compound_head(page))
+
+/**
+ * page_slab - Converts from page to slab.
+ * @p: The page.
+ *
+ * This function cannot be called on a NULL pointer. It should only be
+ * called at the head slab page.
+ *
+ * XXX can VM_BUG_ON_PAGE be added here somehow?
+ *
+ * Return: The slab which contains this page.
+ */
+#define page_slab(p)		(_Generic((p),				\
+	const struct page *:	(const struct slab *)(p),		\
+	struct page *:		(struct slab *)(p)))
+
+/**
+ * slab_page - The first struct page allocated for a slab
+ * @slab: The slab.
+ *
+ * Slabs are allocated as one-or-more pages.  It is occasionally necessary
+ * to convert back to a struct page in order to communicate with the rest
+ * of the mm.  Please use this helper function instead of casting yourself,
+ * as the implementation may change in the future.
+ */
+#define slab_page(s)		(_Generic((s),				\
+	const struct slab *:	(const struct page *)s,			\
+	struct slab *:		(struct page *)s))
 
 static __always_inline int PageTail(struct page *page)
 {

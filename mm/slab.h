@@ -5,6 +5,88 @@
  * Internal slab definitions
  */
 
+
+/*
+ * Does this memory belong to a slab cache?  Slub can return page allocator
+ * memory for certain size allocations.
+ */
+/*
+static inline bool slab_test_cache(const struct slab *slab)
+{
+	return test_bit(PG_slab, &slab->flags);
+}
+
+static inline bool slab_test_multi_page(const struct slab *slab)
+{
+	return test_bit(PG_head, &slab->flags);
+}
+*/
+
+/*
+ * If network-based swap is enabled, sl*b must keep track of whether pages
+ * were allocated from pfmemalloc reserves.
+ */
+static inline bool slab_test_pfmemalloc(const struct slab *slab)
+{
+	return PageSlabPfmemalloc((struct page*)slab_page(slab));
+}
+
+static inline bool slab_test_pfmemalloc_unsafe(const struct slab *slab)
+{
+	return __PageSlabPfmemalloc((struct page*)slab_page(slab));
+}
+
+static inline void slab_set_pfmemalloc(struct slab *slab)
+{
+	SetPageSlabPfmemalloc(slab_page(slab));
+}
+
+static inline void slab_clear_pfmemalloc(struct slab *slab)
+{
+	ClearPageSlabPfmemalloc(slab_page(slab));
+}
+
+static inline void __slab_clear_pfmemalloc(struct slab *slab)
+{
+	__ClearPageSlabPfmemalloc(slab_page(slab));
+}
+
+static inline void *slab_address(const struct slab *slab)
+{
+	return page_address(slab_page(slab));
+}
+
+static inline int slab_nid(const struct slab *slab)
+{
+	return page_to_nid(slab_page(slab));
+}
+
+static inline pg_data_t *slab_pgdat(const struct slab *slab)
+{
+	return page_pgdat(slab_page(slab));
+}
+
+static inline struct slab *virt_to_slab(const void *addr)
+{
+	struct page *page = virt_to_head_page(addr);
+
+	/* XXX: convert to __PageSlab that doesn't do compound_head() */
+	if (!PageSlab(page))
+		return NULL;
+
+	return page_slab(page);
+}
+
+static inline int slab_order(const struct slab *slab)
+{
+	return compound_order((struct page*)slab_page(slab));
+}
+
+static inline size_t slab_size(const struct slab *slab)
+{
+	return PAGE_SIZE << slab_order(slab);
+}
+
 #ifdef CONFIG_SLOB
 /*
  * Common fields provided in kmem_cache by all slab allocators
