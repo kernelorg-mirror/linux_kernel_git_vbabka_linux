@@ -5180,15 +5180,15 @@ static int add_location(struct loc_track *t, struct kmem_cache *s,
 }
 
 static void process_slab(struct loc_track *t, struct kmem_cache *s,
-		struct page *page, enum track_item alloc,
+		struct slab *slab, enum track_item alloc,
 		unsigned long *obj_map)
 {
-	void *addr = page_address(page);
+	void *addr = slab_address(slab);
 	void *p;
 
-	__fill_map(obj_map, s, page);
+	__fill_map(obj_map, s, slab_page(slab));
 
-	for_each_object(p, s, addr, page->objects)
+	for_each_object(p, s, addr, slab->objects)
 		if (!test_bit(__obj_to_index(s, addr, p), obj_map))
 			add_location(t, s, get_track(s, p, alloc));
 }
@@ -6141,16 +6141,16 @@ static int slab_debug_trace_open(struct inode *inode, struct file *filep)
 
 	for_each_kmem_cache_node(s, node, n) {
 		unsigned long flags;
-		struct page *page;
+		struct slab *slab;
 
 		if (!atomic_long_read(&n->nr_slabs))
 			continue;
 
 		spin_lock_irqsave(&n->list_lock, flags);
-		list_for_each_entry(page, &n->partial, slab_list)
-			process_slab(t, s, page, alloc, obj_map);
-		list_for_each_entry(page, &n->full, slab_list)
-			process_slab(t, s, page, alloc, obj_map);
+		list_for_each_entry(slab, &n->partial, slab_list)
+			process_slab(t, s, slab, alloc, obj_map);
+		list_for_each_entry(slab, &n->full, slab_list)
+			process_slab(t, s, slab, alloc, obj_map);
 		spin_unlock_irqrestore(&n->list_lock, flags);
 	}
 
