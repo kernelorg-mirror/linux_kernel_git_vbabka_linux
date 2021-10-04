@@ -519,6 +519,18 @@ static __always_inline void unaccount_slab_page(struct page *page, int order,
 			    -(PAGE_SIZE << order));
 }
 
+static __always_inline void account_slab(struct slab *slab, int order,
+					 struct kmem_cache *s, gfp_t gfp)
+{
+	account_slab_page(slab_page(slab), order, s, gfp);
+}
+
+static __always_inline void unaccount_slab(struct slab *slab, int order,
+					   struct kmem_cache *s)
+{
+	unaccount_slab_page(slab_page(slab), order, s);
+}
+
 static inline struct kmem_cache *cache_from_obj(struct kmem_cache *s, void *x)
 {
 	struct kmem_cache *cachep;
