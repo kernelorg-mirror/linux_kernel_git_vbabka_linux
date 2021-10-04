@@ -67,13 +67,9 @@ struct slab {
 	static_assert(offsetof(struct page, pg) == offsetof(struct slab, sl))
 SLAB_MATCH(flags, __page_flags);
 SLAB_MATCH(compound_head, slab_list);	/* Ensure bit 0 is clear */
-SLAB_MATCH(slab_list, slab_list);
 #ifndef CONFIG_SLOB
 SLAB_MATCH(rcu_head, rcu_head);
 #endif
-SLAB_MATCH(slab_cache, slab_cache);
-SLAB_MATCH(s_mem, s_mem);
-SLAB_MATCH(active, active);
 SLAB_MATCH(_refcount, __page_refcount);
 #ifdef CONFIG_MEMCG
 SLAB_MATCH(memcg_data, memcg_data);
