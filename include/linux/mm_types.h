@@ -239,6 +239,62 @@ struct page {
 #endif
 } _struct_page_alignment;
 
+/* Reuses the bits in struct page */
+struct slab {
+	unsigned long __pad_flags;
+	union {
+		struct list_head slab_list;
+		struct {	/* Partial pages */
+			struct slab *next;
+#ifdef CONFIG_64BIT
+			int slabs;	/* Nr of slabs left */
+			int pobjects;	/* Approximate count */
+#else
+			short int slabs;
+			short int pobjects;
+#endif
+		};
+		struct rcu_head rcu_head;
+	};
+	struct kmem_cache *slab_cache; /* not slob */
+	/* Double-word boundary */
+	void *freelist;		/* first free object */
+	union {
+		void *s_mem;	/* slab: first object */
+		unsigned long counters;		/* SLUB */
+		struct {			/* SLUB */
+			unsigned inuse:16;
+			unsigned objects:15;
+			unsigned frozen:1;
+		};
+	};
+
+	union {
+		unsigned int active;		/* SLAB */
+		int units;			/* SLOB */
+	};
+	atomic_t _refcount;
+#ifdef CONFIG_MEMCG
+	unsigned long memcg_data;
+#endif
+};
+
+#define SLAB_MATCH(pg, sl)						\
+	static_assert(offsetof(struct page, pg) == offsetof(struct slab, sl))
+SLAB_MATCH(flags, __pad_flags);
+SLAB_MATCH(compound_head, slab_list);	/* Ensure bit 0 is clear */
+SLAB_MATCH(slab_list, slab_list);
+SLAB_MATCH(rcu_head, rcu_head);
+SLAB_MATCH(slab_cache, slab_cache);
+SLAB_MATCH(s_mem, s_mem);
+SLAB_MATCH(active, active);
+SLAB_MATCH(_refcount, _refcount);
+#ifdef CONFIG_MEMCG
+SLAB_MATCH(memcg_data, memcg_data);
+#endif
+#undef SLAB_MATCH
+static_assert(sizeof(struct slab) <= sizeof(struct page));
+
 static inline atomic_t *compound_mapcount_ptr(struct page *page)
 {
 	return &page[1].compound_mapcount;
