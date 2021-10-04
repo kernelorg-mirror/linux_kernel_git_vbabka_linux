@@ -3496,7 +3496,7 @@ static __always_inline void slab_free(struct kmem_cache *s, struct page *page,
 #ifdef CONFIG_KASAN_GENERIC
 void ___cache_free(struct kmem_cache *cache, void *x, unsigned long addr)
 {
-	do_slab_free(cache, virt_to_head_page(x), x, NULL, 1, addr);
+	do_slab_free(cache, slab_page(virt_to_slab(x)), x, NULL, 1, addr);
 }
 #endif
 
@@ -3505,7 +3505,7 @@ void kmem_cache_free(struct kmem_cache *s, void *x)
 	s = cache_from_obj(s, x);
 	if (!s)
 		return;
-	slab_free(s, virt_to_head_page(x), x, NULL, 1, _RET_IP_);
+	slab_free(s, slab_page(virt_to_slab(x)), x, NULL, 1, _RET_IP_);
 	trace_kmem_cache_free(_RET_IP_, x, s->name);
 }
 EXPORT_SYMBOL(kmem_cache_free);
@@ -4537,6 +4537,7 @@ EXPORT_SYMBOL(__ksize);
 void kfree(const void *x)
 {
 	struct page *page;
+	struct slab *slab;
 	void *object = (void *)x;
 
 	trace_kfree(_RET_IP_, x);
@@ -4545,11 +4546,13 @@ void kfree(const void *x)
 		return;
 
 	page = virt_to_head_page(x);
+	/* XXX: could benefit from __PageSlab() like virt_to_slab() */
 	if (unlikely(!PageSlab(page))) {
 		free_nonslab_page(page, object);
 		return;
 	}
-	slab_free(page->slab_cache, page, object, NULL, 1, _RET_IP_);
+	slab = page_slab(page);
+	slab_free(slab->slab_cache, slab_page(slab), object, NULL, 1, _RET_IP_);
 }
 EXPORT_SYMBOL(kfree);
 
