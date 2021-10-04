@@ -578,7 +578,7 @@ size_t __ksize(const void *block)
 	if (unlikely(block == ZERO_SIZE_PTR))
 		return 0;
 
-	sp = virt_to_page(block);
+	sp = virt_to_head_page(block);
 	if (unlikely(!PageSlab(sp)))
 		return page_size(sp);
 
