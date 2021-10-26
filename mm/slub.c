@@ -2002,7 +2002,9 @@ static void __free_slab(struct kmem_cache *s, struct page *page)
 
 static void rcu_free_slab(struct rcu_head *h)
 {
-	struct page *page = container_of(h, struct page, rcu_head);
+	struct page *page;
+
+	page = container_of(h, struct page, rcu_head);
 
 	__free_slab(page->slab_cache, page);
 }
@@ -2109,7 +2111,8 @@ static inline bool pfmemalloc_match(struct slab *slab, gfp_t gfpflags);
 static void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
 			      struct page **ret_page, gfp_t gfpflags)
 {
-	struct page *page, *page2;
+	struct page *page;
+	struct page *page2;
 	void *object = NULL;
 	unsigned int available = 0;
 	unsigned long flags;
@@ -2452,8 +2455,11 @@ redo:
 static void __unfreeze_partials(struct kmem_cache *s, struct page *partial_page)
 {
 	struct kmem_cache_node *n = NULL, *n2 = NULL;
-	struct page *page, *discard_page = NULL;
+	struct page *page;
+	struct page *discard_page;
 	unsigned long flags = 0;
+
+	discard_page = NULL;
 
 	while (partial_page) {
 		struct page new;
@@ -2548,10 +2554,13 @@ static void unfreeze_partials_cpu(struct kmem_cache *s,
 static void put_cpu_partial(struct kmem_cache *s, struct page *page, int drain)
 {
 	struct page *oldpage;
-	struct page *page_to_unfreeze = NULL;
+	struct page *page_to_unfreeze;
 	unsigned long flags;
-	int pages = 0;
+	int pages;
 	int pobjects = 0;
+
+	page_to_unfreeze = NULL;
+	pages = 0;
 
 	local_lock_irqsave(&s->cpu_slab->lock, flags);
 
@@ -2624,7 +2633,9 @@ static inline void __flush_cpu_slab(struct kmem_cache *s, int cpu)
 {
 	struct kmem_cache_cpu *c = per_cpu_ptr(s->cpu_slab, cpu);
 	void *freelist = c->freelist;
-	struct page *page = c->page;
+	struct page *page;
+
+	page = c->page;
 
 	c->page = NULL;
 	c->freelist = NULL;
@@ -3047,7 +3058,9 @@ retry_load_page:
 	local_lock_irqsave(&s->cpu_slab->lock, flags);
 	if (unlikely(c->page)) {
 		void *flush_freelist = c->freelist;
-		struct page *flush_page = c->page;
+		struct page *flush_page;
+
+		flush_page = c->page;
 
 		c->page = NULL;
 		c->freelist = NULL;
@@ -4255,7 +4268,8 @@ static void list_slab_objects(struct kmem_cache *s, struct page *page,
 static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
 {
 	LIST_HEAD(discard);
-	struct page *page, *h;
+	struct page *page;
+	struct page *h;
 
 	BUG_ON(irqs_disabled());
 	spin_lock_irq(&n->list_lock);
@@ -5460,9 +5474,11 @@ SLAB_ATTR_RO(objects_partial);
 static ssize_t slabs_cpu_partial_show(struct kmem_cache *s, char *buf)
 {
 	int objects = 0;
-	int pages = 0;
+	int pages;
 	int cpu;
 	int len = 0;
+
+	pages = 0;
 
 	for_each_online_cpu(cpu) {
 		struct page *page;
