@@ -1,0 +1,86 @@
+From 4fc74fbe1c9217278eaf52e9846b5ee57d749abb Mon Sep 17 00:00:00 2001
+From: Vlastimil Babka <vbabka@suse.cz>
+Date: Wed, 27 Oct 2021 15:28:35 +0200
+Subject: [PATCH] after-cocci
+
+---
+ mm/slub.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/mm/slub.c b/mm/slub.c
+index be085a276c98..ac5f2f71119c 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -2016,7 +2016,7 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab)
+ 
+ static void rcu_free_slab(struct rcu_head *h)
+ {
+-	struct slab *slab;slab = container_of(h, struct page, rcu_head);
++	struct slab *slab;slab = container_of(h, struct slab, rcu_head);
+ 
+ 	__free_slab(slab->slab_cache, slab);
+ }
+@@ -2140,7 +2140,7 @@ static void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
+ 		return NULL;
+ 
+ 	spin_lock_irqsave(&n->list_lock, flags);
+-	list_for_each_entry_safe(page, slab2, &n->partial, slab_list) {
++	list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
+ 		void *t;
+ 
+ 		if (!pfmemalloc_match(slab, gfpflags))
+@@ -2504,8 +2504,8 @@ static void __unfreeze_partials(struct kmem_cache *s,
+ 						"unfreezing slab"));
+ 
+ 		if (unlikely(!new.inuse && n->nr_partial >= s->min_partial)) {
+-			page->next = slab_to_discard;
+-			slab_to_discard = page;
++			slab->next = slab_to_discard;
++			slab_to_discard = slab;
+ 		} else {
+ 			add_partial(n, slab, DEACTIVATE_TO_TAIL);
+ 			stat(s, FREE_ADD_PARTIAL);
+@@ -2516,7 +2516,7 @@ static void __unfreeze_partials(struct kmem_cache *s,
+ 		spin_unlock_irqrestore(&n->list_lock, flags);
+ 
+ 	while (slab_to_discard) {
+-		page = slab_to_discard;
++		slab = slab_to_discard;
+ 		slab_to_discard = slab_to_discard->next;
+ 
+ 		stat(s, DEACTIVATE_EMPTY);
+@@ -2581,11 +2581,11 @@ static void put_cpu_partial(struct kmem_cache *s, struct slab *slab,
+ 			 * per node partial list. Postpone the actual unfreezing
+ 			 * outside of the critical section.
+ 			 */
+-			page_to_unfreeze = oldslab;
++			slab_to_unfreeze = oldslab;
+ 			oldslab = NULL;
+ 		} else {
+ 			pobjects = oldslab->pobjects;
+-			pages = oldslab->slabs;
++			slabs = oldslab->slabs;
+ 		}
+ 	}
+ 
+@@ -5486,7 +5486,7 @@ static ssize_t slabs_cpu_partial_show(struct kmem_cache *s, char *buf)
+ 		struct slab *slab;slab = slub_percpu_partial(per_cpu_ptr(s->cpu_slab, cpu));
+ 
+ 		if (slab) {
+-			pages += slab->slabs;
++			slabs += slab->slabs;
+ 			objects += slab->pobjects;
+ 		}
+ 	}
+@@ -5498,7 +5498,7 @@ static ssize_t slabs_cpu_partial_show(struct kmem_cache *s, char *buf)
+ 		struct slab *slab;slab = slub_percpu_partial(per_cpu_ptr(s->cpu_slab, cpu));
+ 		if (slab)
+ 			len += sysfs_emit_at(buf, len, " C%d=%d(%d)",
+-					     cpu, page->pobjects, slab->slabs);
++					     cpu, slab->pobjects, slab->slabs);
+ 	}
+ #endif
+ 	len += sysfs_emit_at(buf, len, "\n");
+-- 
+2.33.1
+
