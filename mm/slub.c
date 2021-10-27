@@ -1980,7 +1980,7 @@ out:
 	if (!slab)
 		return NULL;
 
-	inc_slabs_node(s, slab_nid(slab), page->objects);
+	inc_slabs_node(s, slab_nid(slab), slab->objects);
 
 	return slab;
 }
@@ -2022,9 +2022,9 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab)
 
 static void rcu_free_slab(struct rcu_head *h)
 {
-	struct slab *slab;slab = container_of(h, struct page, rcu_head);
+	struct slab *slab = container_of(h, struct slab, rcu_head);
 
-	__free_slab(page->slab_cache, slab);
+	__free_slab(slab->slab_cache, slab);
 }
 
 static void free_slab(struct kmem_cache *s, struct slab *slab)
@@ -2146,7 +2146,7 @@ static void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
 		return NULL;
 
 	spin_lock_irqsave(&n->list_lock, flags);
-	list_for_each_entry_safe(page, slab2, &n->partial, slab_list) {
+	list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
 		void *t;
 
 		if (!pfmemalloc_match(slab, gfpflags))
@@ -2509,8 +2509,8 @@ static void __unfreeze_partials(struct kmem_cache *s,
 						"unfreezing slab"));
 
 		if (unlikely(!new.inuse && n->nr_partial >= s->min_partial)) {
-			page->next = slab_to_discard;
-			slab_to_discard = page;
+			slab->next = slab_to_discard;
+			slab_to_discard = slab;
 		} else {
 			add_partial(n, slab, DEACTIVATE_TO_TAIL);
 			stat(s, FREE_ADD_PARTIAL);
@@ -2521,7 +2521,7 @@ static void __unfreeze_partials(struct kmem_cache *s,
 		spin_unlock_irqrestore(&n->list_lock, flags);
 
 	while (slab_to_discard) {
-		page = slab_to_discard;
+		slab = slab_to_discard;
 		slab_to_discard = slab_to_discard->next;
 
 		stat(s, DEACTIVATE_EMPTY);
@@ -2586,11 +2586,11 @@ static void put_cpu_partial(struct kmem_cache *s, struct slab *slab,
 			 * per node partial list. Postpone the actual unfreezing
 			 * outside of the critical section.
 			 */
-			page_to_unfreeze = oldslab;
+			slab_to_unfreeze = oldslab;
 			oldslab = NULL;
 		} else {
 			pobjects = oldslab->pobjects;
-			pages = oldslab->slabs;
+			slabs = oldslab->slabs;
 		}
 	}
 
@@ -5478,7 +5478,7 @@ static ssize_t slabs_cpu_partial_show(struct kmem_cache *s, char *buf)
 		struct slab *slab;slab = slub_percpu_partial(per_cpu_ptr(s->cpu_slab, cpu));
 
 		if (slab) {
-			pages += slab->slabs;
+			slabs += slab->slabs;
 			objects += slab->pobjects;
 		}
 	}
@@ -5490,7 +5490,7 @@ static ssize_t slabs_cpu_partial_show(struct kmem_cache *s, char *buf)
 		struct slab *slab;slab = slub_percpu_partial(per_cpu_ptr(s->cpu_slab, cpu));
 		if (slab)
 			len += sysfs_emit_at(buf, len, " C%d=%d(%d)",
-					     cpu, page->pobjects, slab->slabs);
+					     cpu, slab->pobjects, slab->slabs);
 	}
 #endif
 	len += sysfs_emit_at(buf, len, "\n");
