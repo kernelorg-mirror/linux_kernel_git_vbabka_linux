@@ -1557,8 +1557,10 @@ static void check_poison_obj(struct kmem_cache *cachep, void *objp)
 		/* Print some data about the neighboring objects, if they
 		 * exist:
 		 */
-		struct page *page = virt_to_head_page(objp);
+		struct page *page;
 		unsigned int objnr;
+
+		page = virt_to_head_page(objp);
 
 		objnr = obj_to_index(cachep, page, objp);
 		if (objnr) {
@@ -1644,7 +1646,8 @@ static void slab_destroy(struct kmem_cache *cachep, struct page *page)
  */
 static void slabs_destroy(struct kmem_cache *cachep, struct list_head *list)
 {
-	struct page *page, *n;
+	struct page *page;
+	struct page *n;
 
 	list_for_each_entry_safe(page, n, list, slab_list) {
 		list_del(&page->slab_list);
@@ -3474,7 +3477,9 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 	}
 
 	if (sk_memalloc_socks()) {
-		struct page *page = virt_to_head_page(objp);
+		struct page *page;
+
+		page = virt_to_head_page(objp);
 
 		if (unlikely(PageSlabPfmemalloc(page))) {
 			cache_free_pfmemalloc(cachep, page, objp);
