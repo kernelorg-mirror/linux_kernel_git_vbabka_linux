@@ -66,6 +66,8 @@ struct stack_record {
 	unsigned long entries[];	/* Variable-sized array of entries. */
 };
 
+bool stack_depot_want_early_init = false;
+
 static void *stack_slabs[STACK_ALLOC_MAX_SLABS];
 
 static int depot_index;
