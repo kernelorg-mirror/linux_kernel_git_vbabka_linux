@@ -446,7 +446,7 @@ slub_set_cpu_partial(struct kmem_cache *s, unsigned int nr_objects)
 /*
  * Per slab locking using the pagelock
  */
-static __always_inline void __slab_lock(struct slab *slab)
+static __always_inline void slab_lock(struct slab *slab)
 {
 	struct page *page = slab_page(slab);
 
@@ -454,7 +454,7 @@ static __always_inline void __slab_lock(struct slab *slab)
 	bit_spin_lock(PG_locked, &page->flags);
 }
 
-static __always_inline void __slab_unlock(struct slab *slab)
+static __always_inline void slab_unlock(struct slab *slab)
 {
 	struct page *page = slab_page(slab);
 
@@ -462,24 +462,10 @@ static __always_inline void __slab_unlock(struct slab *slab)
 	__bit_spin_unlock(PG_locked, &page->flags);
 }
 
-static __always_inline void slab_lock(struct slab *slab, unsigned long *flags)
-{
-	if (IS_ENABLED(CONFIG_PREEMPT_RT))
-		local_irq_save(*flags);
-	__slab_lock(slab);
-}
-
-static __always_inline void slab_unlock(struct slab *slab, unsigned long *flags)
-{
-	__slab_unlock(slab);
-	if (IS_ENABLED(CONFIG_PREEMPT_RT))
-		local_irq_restore(*flags);
-}
-
 /*
  * Interrupts must be disabled (for the fallback code to work right), typically
  * by an _irqsave() lock variant. Except on PREEMPT_RT where locks are different
- * so we disable interrupts as part of slab_[un]lock().
+ * so we disable interrupts around slab_[un]lock().
  */
 static inline bool __cmpxchg_double_slab(struct kmem_cache *s, struct slab *slab,
 		void *freelist_old, unsigned long counters_old,
@@ -500,16 +486,25 @@ static inline bool __cmpxchg_double_slab(struct kmem_cache *s, struct slab *slab
 	{
 		/* init to 0 to prevent spurious warnings */
 		unsigned long flags = 0;
+		bool success = false;
 
-		slab_lock(slab, &flags);
+		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+			local_irq_save(flags);
+		slab_lock(slab);
+
 		if (slab->freelist == freelist_old &&
 					slab->counters == counters_old) {
 			slab->freelist = freelist_new;
 			slab->counters = counters_new;
-			slab_unlock(slab, &flags);
-			return true;
+			success = true;
 		}
-		slab_unlock(slab, &flags);
+
+		slab_unlock(slab);
+		if (IS_ENABLED(CONFIG_PREEMPT_RT))
+			local_irq_restore(flags);
+
+		if (likely(success))
+			return true;
 	}
 
 	cpu_relax();
@@ -538,19 +533,23 @@ static inline bool cmpxchg_double_slab(struct kmem_cache *s, struct slab *slab,
 #endif
 	{
 		unsigned long flags;
+		bool success = false;
 
 		local_irq_save(flags);
-		__slab_lock(slab);
+		slab_lock(slab);
+
 		if (slab->freelist == freelist_old &&
 					slab->counters == counters_old) {
 			slab->freelist = freelist_new;
 			slab->counters = counters_new;
-			__slab_unlock(slab);
-			local_irq_restore(flags);
-			return true;
+			success = true;
 		}
-		__slab_unlock(slab);
+
+		slab_unlock(slab);
 		local_irq_restore(flags);
+
+		if (likely(success))
+			return true;
 	}
 
 	cpu_relax();
