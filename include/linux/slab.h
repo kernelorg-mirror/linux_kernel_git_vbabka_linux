@@ -339,7 +339,11 @@ enum kmalloc_cache_type {
 #else
 	KMALLOC_CGROUP,
 #endif
+#ifndef CONFIG_SLUB_TINY
 	KMALLOC_RECLAIM,
+#else
+	KMALLOC_RECLAIM = KMALLOC_NORMAL,
+#endif
 #ifdef CONFIG_ZONE_DMA
 	KMALLOC_DMA,
 #endif
