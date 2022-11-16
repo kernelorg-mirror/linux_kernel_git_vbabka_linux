@@ -317,7 +317,8 @@ kmem_cache_create_usercopy(const char *name,
 	flags &= CACHE_CREATE_MASK;
 
 	/* Fail closed on bad usersize of useroffset values. */
-	if (WARN_ON(!usersize && useroffset) ||
+	if (!IS_ENABLED(CONFIG_HARDENED_USERCOPY) ||
+	    WARN_ON(!usersize && useroffset) ||
 	    WARN_ON(size < usersize || size - usersize < useroffset))
 		usersize = useroffset = 0;
 
@@ -639,6 +640,9 @@ void __init create_boot_cache(struct kmem_cache *s, const char *name,
 	if (is_power_of_2(size))
 		align = max(align, size);
 	s->align = calculate_alignment(flags, align, size);
+
+	if (!IS_ENABLED(CONFIG_HARDENED_USERCOPY))
+		useroffset = usersize = 0;
 
 	s->useroffset = useroffset;
 	s->usersize = usersize;
