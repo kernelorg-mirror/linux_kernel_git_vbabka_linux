@@ -125,7 +125,7 @@ u64 stable_page_flags(struct page *page)
 	/*
 	 * pseudo flags for the well known (anonymous) memory mapped pages
 	 *
-	 * Note that page->_mapcount is overloaded in SLOB/SLUB/SLQB, so the
+	 * Note that page->_mapcount is overloaded in SLAB/SLUB, so the
 	 * simple test in page_mapped() is not enough.
 	 */
 	if (!PageSlab(page) && page_mapped(page))
@@ -166,8 +166,7 @@ u64 stable_page_flags(struct page *page)
 
 	/*
 	 * Caveats on high order pages: page->_refcount will only be set
-	 * -1 on the head page; SLUB/SLQB do the same for PG_slab;
-	 * SLOB won't set PG_slab at all on compound pages.
+	 * -1 on the head page; SLAB/SLUB do the same for PG_slab;
 	 */
 	if (PageBuddy(page))
 		u |= 1 << KPF_BUDDY;
