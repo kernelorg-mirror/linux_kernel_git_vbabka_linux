@@ -170,7 +170,14 @@ should be used if a part of the cache might be copied to the userspace.
 After the cache is created kmem_cache_alloc() and its convenience
 wrappers can allocate memory from that cache.
 
-When the allocated memory is no longer needed it must be freed. You can
-use kvfree() for the memory allocated with `kmalloc`, `vmalloc` and
-`kvmalloc`. The slab caches should be freed with kmem_cache_free(). And
-don't forget to destroy the cache with kmem_cache_destroy().
+When the allocated memory is no longer needed it must be freed. Objects
+allocated by `kmalloc` can be freed by `kfree` or `kvfree`.
+Objects allocated by `kmem_cache_alloc` can be freed with `kmem_cache_free`
+or also by `kfree` or `kvfree`, which can be more convenient as it does
+not require the kmem_cache pointed.
+The rules for _bulk and _rcu flavors of freeing functions are analogical.
+
+Memory allocated by `vmalloc` can be freed with `vfree` or `kvfree`.
+Memory allocated by `kvmalloc` can be freed with `kvfree`.
+Caches created by `kmem_cache_create` should be freed with
+`kmem_cache_destroy` only after freeing all the allocated objects first.
