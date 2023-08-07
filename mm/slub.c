@@ -188,6 +188,79 @@ do {					\
 #define USE_LOCKLESS_FAST_PATH()	(false)
 #endif
 
+/* copy/pasted  from mm/page_alloc.c */
+
+#if defined(CONFIG_SMP) || defined(CONFIG_PREEMPT_RT)
+/*
+ * On SMP, spin_trylock is sufficient protection.
+ * On PREEMPT_RT, spin_trylock is equivalent on both SMP and UP.
+ */
+#define pcp_trylock_prepare(flags)	do { } while (0)
+#define pcp_trylock_finish(flag)	do { } while (0)
+#else
+
+/* UP spin_trylock always succeeds so disable IRQs to prevent re-entrancy. */
+#define pcp_trylock_prepare(flags)	local_irq_save(flags)
+#define pcp_trylock_finish(flags)	local_irq_restore(flags)
+#endif
+
+/*
+ * Locking a pcp requires a PCP lookup followed by a spinlock. To avoid
+ * a migration causing the wrong PCP to be locked and remote memory being
+ * potentially allocated, pin the task to the CPU for the lookup+lock.
+ * preempt_disable is used on !RT because it is faster than migrate_disable.
+ * migrate_disable is used on RT because otherwise RT spinlock usage is
+ * interfered with and a high priority task cannot preempt the allocator.
+ */
+#ifndef CONFIG_PREEMPT_RT
+#define pcpu_task_pin()		preempt_disable()
+#define pcpu_task_unpin()	preempt_enable()
+#else
+#define pcpu_task_pin()		migrate_disable()
+#define pcpu_task_unpin()	migrate_enable()
+#endif
+
+/*
+ * Generic helper to lookup and a per-cpu variable with an embedded spinlock.
+ * Return value should be used with equivalent unlock helper.
+ */
+#define pcpu_spin_lock(type, member, ptr)				\
+({									\
+	type *_ret;							\
+	pcpu_task_pin();						\
+	_ret = this_cpu_ptr(ptr);					\
+	spin_lock(&_ret->member);					\
+	_ret;								\
+})
+
+#define pcpu_spin_trylock(type, member, ptr)				\
+({									\
+	type *_ret;							\
+	pcpu_task_pin();						\
+	_ret = this_cpu_ptr(ptr);					\
+	if (!spin_trylock(&_ret->member)) {				\
+		pcpu_task_unpin();					\
+		_ret = NULL;						\
+	}								\
+	_ret;								\
+})
+
+#define pcpu_spin_unlock(member, ptr)					\
+({									\
+	spin_unlock(&ptr->member);					\
+	pcpu_task_unpin();						\
+})
+
+/* struct slub_percpu_array specific helpers. */
+#define pca_spin_lock(ptr)						\
+	pcpu_spin_lock(struct slub_percpu_array, lock, ptr)
+
+#define pca_spin_trylock(ptr)						\
+	pcpu_spin_trylock(struct slub_percpu_array, lock, ptr)
+
+#define pca_spin_unlock(ptr)						\
+	pcpu_spin_unlock(lock, ptr)
+
 #ifndef CONFIG_SLUB_TINY
 #define __fastpath_inline __always_inline
 #else
@@ -3440,6 +3513,32 @@ static __always_inline void maybe_wipe_obj_freeptr(struct kmem_cache *s,
 			0, sizeof(void *));
 }
 
+static inline void *alloc_from_pca(struct kmem_cache *s)
+{
+	unsigned long __maybe_unused UP_flags;
+	struct slub_percpu_array *pca;
+	void *object = NULL;
+
+	pcp_trylock_prepare(UP_flags);
+	pca = pca_spin_trylock(s->cpu_array);
+
+	if (unlikely(!pca))
+		goto failed;
+
+	if (likely(pca->used > 0)) {
+		object = pca->objects[--pca->used];
+		pca_spin_unlock(pca);
+		pcp_trylock_finish(UP_flags);
+		stat(s, ALLOC_PERCPU_CACHE);
+		return object;
+	}
+	pca_spin_unlock(pca);
+
+failed:
+	pcp_trylock_finish(UP_flags);
+	return NULL;
+}
+
 /*
  * Inlined fastpath so that allocation functions (kmalloc, kmem_cache_alloc)
  * have the fastpath folded into their functions. So no function call
@@ -3465,7 +3564,11 @@ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list
 	if (unlikely(object))
 		goto out;
 
-	object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
+	if (s->cpu_array)
+		object = alloc_from_pca(s);
+
+	if (!object)
+		object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
 
 	maybe_wipe_obj_freeptr(s, object);
 	init = slab_want_init_on_alloc(gfpflags, s);
@@ -3715,6 +3818,34 @@ slab_empty:
 	discard_slab(s, slab);
 }
 
+static inline bool free_to_pca(struct kmem_cache *s, void *object)
+{
+	unsigned long __maybe_unused UP_flags;
+	struct slub_percpu_array *pca;
+	bool ret = false;
+
+	pcp_trylock_prepare(UP_flags);
+	pca = pca_spin_trylock(s->cpu_array);
+
+	if (!pca) {
+		pcp_trylock_finish(UP_flags);
+		return false;
+	}
+
+	if (pca->used < pca->count) {
+		pca->objects[pca->used++] = object;
+		ret = true;
+	}
+
+	pca_spin_unlock(pca);
+	pcp_trylock_finish(UP_flags);
+
+	if (ret)
+		stat(s, FREE_PERCPU_CACHE);
+
+	return ret;
+}
+
 #ifndef CONFIG_SLUB_TINY
 /*
  * Fastpath with forced inlining to produce a kfree and kmem_cache_free that
@@ -3739,6 +3870,11 @@ static __always_inline void do_slab_free(struct kmem_cache *s,
 	struct kmem_cache_cpu *c;
 	unsigned long tid;
 	void **freelist;
+
+	if (s->cpu_array && cnt == 1) {
+		if (free_to_pca(s, head))
+			return;
+	}
 
 redo:
 	/*
@@ -3792,6 +3928,11 @@ static void do_slab_free(struct kmem_cache *s,
 				int cnt, unsigned long addr)
 {
 	void *tail_obj = tail ? : head;
+
+	if (s->cpu_array && cnt == 1) {
+		if (free_to_pca(s, head))
+			return;
+	}
 
 	__slab_free(s, slab, head, tail_obj, cnt, addr);
 }
@@ -4060,6 +4201,45 @@ int kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags, size_t size,
 }
 EXPORT_SYMBOL(kmem_cache_alloc_bulk);
 
+int kmem_cache_prefill_percpu_array(struct kmem_cache *s, unsigned int count,
+		gfp_t gfp)
+{
+	struct slub_percpu_array *pca;
+	void *objects[32];
+	unsigned int used;
+	unsigned int allocated;
+
+	if (!s->cpu_array)
+		return -EINVAL;
+
+	/* racy but we don't care */
+	pca = raw_cpu_ptr(s->cpu_array);
+
+	used = READ_ONCE(pca->used);
+
+	if (used >= count)
+		return 0;
+
+	if (pca->count < count)
+		return -EINVAL;
+
+	count -= used;
+
+	/* TODO fix later */
+	if (count > 32)
+		count = 32;
+
+	for (int i = 0; i < count; i++)
+		objects[i] = NULL;
+	allocated = kmem_cache_alloc_bulk(s, gfp, count, &objects[0]);
+
+	for (int i = 0; i < count; i++) {
+		if (objects[i]) {
+			kmem_cache_free(s, objects[i]);
+		}
+	}
+	return allocated;
+}
 
 /*
  * Object placement in a slab is made very easy because we always start at
@@ -5131,6 +5311,30 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
 	return 0;
 }
 
+int kmem_cache_setup_percpu_array(struct kmem_cache *s, unsigned int count)
+{
+	int cpu;
+
+	if (WARN_ON_ONCE(!(s->flags & SLAB_NO_MERGE)))
+		return -EINVAL;
+
+	s->cpu_array = __alloc_percpu(struct_size(s->cpu_array, objects, count),
+					sizeof(void *));
+
+	if (!s->cpu_array)
+		return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		struct slub_percpu_array *pca = per_cpu_ptr(s->cpu_array, cpu);
+
+		spin_lock_init(&pca->lock);
+		pca->count = count;
+		pca->used = 0;
+	}
+
+	return 0;
+}
+
 #ifdef SLAB_SUPPORTS_SYSFS
 static int count_inuse(struct slab *slab)
 {
@@ -5908,8 +6112,10 @@ static ssize_t text##_store(struct kmem_cache *s,		\
 }								\
 SLAB_ATTR(text);						\
 
+STAT_ATTR(ALLOC_PERCPU_CACHE, alloc_cpu_cache);
 STAT_ATTR(ALLOC_FASTPATH, alloc_fastpath);
 STAT_ATTR(ALLOC_SLOWPATH, alloc_slowpath);
+STAT_ATTR(FREE_PERCPU_CACHE, free_cpu_cache);
 STAT_ATTR(FREE_FASTPATH, free_fastpath);
 STAT_ATTR(FREE_SLOWPATH, free_slowpath);
 STAT_ATTR(FREE_FROZEN, free_frozen);
@@ -5995,8 +6201,10 @@ static struct attribute *slab_attrs[] = {
 	&remote_node_defrag_ratio_attr.attr,
 #endif
 #ifdef CONFIG_SLUB_STATS
+	&alloc_cpu_cache_attr.attr,
 	&alloc_fastpath_attr.attr,
 	&alloc_slowpath_attr.attr,
+	&free_cpu_cache_attr.attr,
 	&free_fastpath_attr.attr,
 	&free_slowpath_attr.attr,
 	&free_frozen_attr.attr,
