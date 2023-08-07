@@ -161,12 +161,19 @@ static inline struct maple_node *mt_alloc_one(gfp_t gfp)
 
 static inline int mt_alloc_bulk(gfp_t gfp, size_t size, void **nodes)
 {
-	return kmem_cache_alloc_bulk(maple_node_cache, gfp, size, nodes);
+	int allocated = 0;
+	for (size_t i = 0; i < size; i++) {
+		nodes[i] = kmem_cache_alloc(maple_node_cache, gfp);
+		if (nodes[i])
+			allocated++;
+	}
+	return allocated;
 }
 
 static inline void mt_free_bulk(size_t size, void __rcu **nodes)
 {
-	kmem_cache_free_bulk(maple_node_cache, size, (void **)nodes);
+	for (size_t i = 0; i < size; i++)
+		kmem_cache_free(maple_node_cache, nodes[i]);
 }
 
 static void mt_free_rcu(struct rcu_head *head)
