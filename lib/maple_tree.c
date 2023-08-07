@@ -5534,7 +5534,12 @@ void mas_store_prealloc(struct ma_state *mas, void *entry)
 
 	mas_wr_store_setup(&wr_mas);
 	trace_ma_write(__func__, mas, 0, entry);
+
+retry:
 	mas_wr_store_entry(&wr_mas);
+	if (unlikely(mas_nomem(mas, GFP_ATOMIC | __GFP_NOFAIL)))
+		goto retry;
+
 	MAS_WR_BUG_ON(&wr_mas, mas_is_err(mas));
 	mas_destroy(mas);
 }
@@ -5550,9 +5555,10 @@ EXPORT_SYMBOL_GPL(mas_store_prealloc);
 int mas_preallocate(struct ma_state *mas, gfp_t gfp)
 {
 	int ret;
+	int count = 1 + mas_mt_height(mas) * 3;
 
-	mas_node_count_gfp(mas, 1 + mas_mt_height(mas) * 3, gfp);
-	mas->mas_flags |= MA_STATE_PREALLOC;
+	mas_node_count_gfp(mas, 1, gfp);
+	kmem_cache_prefill_percpu_array(maple_node_cache, count, gfp);
 	if (likely(!mas_is_err(mas)))
 		return 0;
 
