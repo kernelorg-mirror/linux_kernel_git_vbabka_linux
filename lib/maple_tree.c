@@ -5452,7 +5452,12 @@ void mas_store_prealloc(struct ma_state *mas, void *entry)
 
 	mas_wr_store_setup(&wr_mas);
 	trace_ma_write(__func__, mas, 0, entry);
+
+retry:
 	mas_wr_store_entry(&wr_mas);
+	if (unlikely(mas_nomem(mas, GFP_ATOMIC | __GFP_NOFAIL)))
+		goto retry;
+
 	MAS_WR_BUG_ON(&wr_mas, mas_is_err(mas));
 	mas_destroy(mas);
 }
@@ -5471,8 +5476,6 @@ int mas_preallocate(struct ma_state *mas, void *entry, gfp_t gfp)
 	MA_WR_STATE(wr_mas, mas, entry);
 	unsigned char node_size;
 	int request = 1;
-	int ret;
-
 
 	if (unlikely(!mas->index && mas->last == ULONG_MAX))
 		goto ask_now;
@@ -5512,16 +5515,8 @@ int mas_preallocate(struct ma_state *mas, void *entry, gfp_t gfp)
 
 	/* node store, slot store needs one node */
 ask_now:
-	mas_node_count_gfp(mas, request, gfp);
-	if (likely(!mas_is_err(mas)))
-		return 0;
+	return kmem_cache_prefill_percpu_array(maple_node_cache, request, gfp);
 
-	mas_set_alloc_req(mas, 0);
-	ret = xa_err(mas->node);
-	mas_reset(mas);
-	mas_destroy(mas);
-	mas_reset(mas);
-	return ret;
 }
 EXPORT_SYMBOL_GPL(mas_preallocate);
 
