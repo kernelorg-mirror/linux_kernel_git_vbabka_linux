@@ -7,6 +7,7 @@
 
 #define SLAB_PANIC 2
 #define SLAB_RECLAIM_ACCOUNT    0x00020000UL            /* Objects are reclaimable */
+#define SLAB_NO_MERGE		0x01000000UL		/* Prevent merging with compatible kmem caches */
 
 #define kzalloc_node(size, flags, node) kmalloc(size, flags)
 
@@ -45,4 +46,7 @@ void kmem_cache_free_bulk(struct kmem_cache *cachep, size_t size, void **list);
 int kmem_cache_alloc_bulk(struct kmem_cache *cachep, gfp_t gfp, size_t size,
 			  void **list);
 
+int kmem_cache_setup_percpu_array(struct kmem_cache *s, unsigned int count);
+int kmem_cache_prefill_percpu_array(struct kmem_cache *s, unsigned int count,
+		gfp_t gfp);
 #endif		/* _TOOLS_SLAB_H */
