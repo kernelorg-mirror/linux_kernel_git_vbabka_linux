@@ -68,11 +68,9 @@
  * Maple state flags
  * * MA_STATE_BULK		- Bulk insert mode
  * * MA_STATE_REBALANCE		- Indicate a rebalance during bulk insert
- * * MA_STATE_PREALLOC		- Preallocated nodes, WARN_ON allocation
  */
 #define MA_STATE_BULK		1
 #define MA_STATE_REBALANCE	2
-#define MA_STATE_PREALLOC	4
 
 #define ma_parent_ptr(x) ((struct maple_pnode *)(x))
 #define mas_tree_parent(x) ((unsigned long)(x->tree) | MA_ROOT_PARENT)
@@ -1263,11 +1261,8 @@ static inline void mas_alloc_nodes(struct ma_state *mas, gfp_t gfp)
 		return;
 
 	mas_set_alloc_req(mas, 0);
-	if (mas->mas_flags & MA_STATE_PREALLOC) {
-		if (allocated)
-			return;
-		WARN_ON(!allocated);
-	}
+	if (mas->mas_flags & MA_STATE_BULK)
+		return;
 
 	if (!allocated || mas->alloc->node_count == MAPLE_ALLOC_SLOTS) {
 		node = (struct maple_alloc *)mt_alloc_one(gfp);
@@ -5569,7 +5564,7 @@ void mas_destroy(struct ma_state *mas)
 
 		mas->mas_flags &= ~MA_STATE_REBALANCE;
 	}
-	mas->mas_flags &= ~(MA_STATE_BULK|MA_STATE_PREALLOC);
+	mas->mas_flags &= ~MA_STATE_BULK;
 
 	total = mas_allocated(mas);
 	while (total) {
@@ -5618,9 +5613,6 @@ int mas_expected_entries(struct ma_state *mas, unsigned long nr_entries)
 	 * of nodes during the operation.
 	 */
 
-	/* Optimize splitting for bulk insert in-order */
-	mas->mas_flags |= MA_STATE_BULK;
-
 	/*
 	 * Avoid overflow, assume a gap between each entry and a trailing null.
 	 * If this is wrong, it just means allocation can happen during
@@ -5637,8 +5629,9 @@ int mas_expected_entries(struct ma_state *mas, unsigned long nr_entries)
 	/* Add working room for split (2 nodes) + new parents */
 	mas_node_count_gfp(mas, nr_nodes + 3, GFP_KERNEL);
 
-	/* Detect if allocations run out */
-	mas->mas_flags |= MA_STATE_PREALLOC;
+	/* Optimize splitting for bulk insert in-order */
+	mas->mas_flags |= MA_STATE_BULK;
+
 
 	if (!mas_is_err(mas))
 		return 0;
