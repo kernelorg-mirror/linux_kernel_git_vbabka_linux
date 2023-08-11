@@ -455,6 +455,12 @@ static inline unsigned int order_objects(unsigned int order, unsigned int size)
 	return ((unsigned int)PAGE_SIZE << order) / size;
 }
 
+static inline unsigned int order_objects_shift(unsigned int order,
+		unsigned int size, unsigned int page_shift)
+{
+	return ((unsigned int)(1U << page_shift) << order) / size;
+}
+
 static inline struct kmem_cache_order_objects oo_make(unsigned int order,
 		unsigned int size)
 {
@@ -4076,6 +4082,14 @@ static unsigned int slub_max_order =
 	IS_ENABLED(CONFIG_SLUB_TINY) ? 1 : PAGE_ALLOC_COSTLY_ORDER;
 static unsigned int slub_min_objects;
 
+static inline int get_order_shift(unsigned long size, unsigned int page_shift)
+{
+	size--;
+	size >>= page_shift;
+
+	return fls64(size);
+}
+
 /*
  * Calculate the order of allocation given an slab object size.
  *
@@ -4103,18 +4117,18 @@ static unsigned int slub_min_objects;
  */
 static inline unsigned int calc_slab_order(unsigned int size,
 		unsigned int min_objects, unsigned int max_order,
-		unsigned int fract_leftover)
+		unsigned int fract_leftover, unsigned int page_shift)
 {
 	unsigned int min_order = slub_min_order;
 	unsigned int order;
 
-	if (order_objects(min_order, size) > MAX_OBJS_PER_PAGE)
-		return get_order(size * MAX_OBJS_PER_PAGE) - 1;
+	if (order_objects_shift(min_order, size, page_shift) > MAX_OBJS_PER_PAGE)
+		return get_order_shift(size * MAX_OBJS_PER_PAGE, page_shift) - 1;
 
-	for (order = max(min_order, (unsigned int)get_order(min_objects * size));
+	for (order = max(min_order, (unsigned int)get_order_shift(min_objects * size, page_shift));
 			order <= max_order; order++) {
 
-		unsigned int slab_size = (unsigned int)PAGE_SIZE << order;
+		unsigned int slab_size = (unsigned int)(1U << page_shift) << order;
 		unsigned int rem;
 
 		rem = slab_size % size;
@@ -4126,12 +4140,12 @@ static inline unsigned int calc_slab_order(unsigned int size,
 	return order;
 }
 
-static inline int calculate_order(unsigned int size)
+static inline int __calculate_order(unsigned int size, unsigned int page_shift,
+		unsigned int nr_cpus)
 {
 	unsigned int order;
 	unsigned int min_objects;
 	unsigned int max_objects;
-	unsigned int nr_cpus;
 
 	/*
 	 * Attempt to find best configuration for a slab. This
@@ -4143,21 +4157,9 @@ static inline int calculate_order(unsigned int size)
 	 */
 	min_objects = slub_min_objects;
 	if (!min_objects) {
-		/*
-		 * Some architectures will only update present cpus when
-		 * onlining them, so don't trust the number if it's just 1. But
-		 * we also don't want to use nr_cpu_ids always, as on some other
-		 * architectures, there can be many possible cpus, but never
-		 * onlined. Here we compromise between trying to avoid too high
-		 * order on systems that appear larger than they are, and too
-		 * low order on systems that appear smaller than they are.
-		 */
-		nr_cpus = num_present_cpus();
-		if (nr_cpus <= 1)
-			nr_cpus = nr_cpu_ids;
 		min_objects = 4 * (fls(nr_cpus) + 1);
 	}
-	max_objects = order_objects(slub_max_order, size);
+	max_objects = order_objects_shift(slub_max_order, size, page_shift);
 	min_objects = min(min_objects, max_objects);
 
 	while (min_objects > 1) {
@@ -4166,7 +4168,7 @@ static inline int calculate_order(unsigned int size)
 		fraction = 16;
 		while (fraction >= 4) {
 			order = calc_slab_order(size, min_objects,
-					slub_max_order, fraction);
+					slub_max_order, fraction, page_shift);
 			if (order <= slub_max_order)
 				return order;
 			fraction /= 2;
@@ -4178,17 +4180,34 @@ static inline int calculate_order(unsigned int size)
 	 * We were unable to place multiple objects in a slab. Now
 	 * lets see if we can place a single object there.
 	 */
-	order = calc_slab_order(size, 1, slub_max_order, 1);
+	order = calc_slab_order(size, 1, slub_max_order, 1, page_shift);
 	if (order <= slub_max_order)
 		return order;
 
 	/*
 	 * Doh this slab cannot be placed using slub_max_order.
 	 */
-	order = calc_slab_order(size, 1, MAX_ORDER, 1);
+	order = calc_slab_order(size, 1, MAX_ORDER, 1, page_shift);
 	if (order <= MAX_ORDER)
 		return order;
 	return -ENOSYS;
+}
+
+static inline int calculate_order(unsigned int size)
+{
+	/*
+	 * Some architectures will only update present cpus when
+	 * onlining them, so don't trust the number if it's just 1. But
+	 * we also don't want to use nr_cpu_ids always, as on some other
+	 * architectures, there can be many possible cpus, but never
+	 * onlined. Here we compromise between trying to avoid too high
+	 * order on systems that appear larger than they are, and too
+	 * low order on systems that appear smaller than they are.
+	 */
+	unsigned int nr_cpus = num_present_cpus();
+	if (nr_cpus <= 1)
+		nr_cpus = nr_cpu_ids;
+	return __calculate_order(size, PAGE_SHIFT, nr_cpus);
 }
 
 static void
@@ -6227,6 +6246,40 @@ static int sysfs_slab_alias(struct kmem_cache *s, const char *name)
 	return 0;
 }
 
+static void __print_all_orders(unsigned int page_shift, unsigned int nr_cpus)
+{
+	int last_order = -1;
+
+	pr_info("Calculated slab orders for page_shift %u nr_cpus %u:\n",
+			page_shift, nr_cpus);
+
+	for (size_t size = 8; size < 1024*1024; size += 8) {
+		int order = __calculate_order(size, page_shift, nr_cpus);
+
+		if (order == last_order)
+			continue;
+
+		pr_info("%10lu\t%d\n", size, order);
+
+		last_order = order;
+	}
+}
+
+static void print_all_orders(void)
+{
+	__print_all_orders(12, 1);
+	__print_all_orders(12, 16);
+	__print_all_orders(12, 128);
+	__print_all_orders(12, 1092);
+	__print_all_orders(12, 4096);
+
+	__print_all_orders(16, 1);
+	__print_all_orders(16, 16);
+	__print_all_orders(16, 128);
+	__print_all_orders(16, 1092);
+	__print_all_orders(16, 4096);
+}
+
 static int __init slab_sysfs_init(void)
 {
 	struct kmem_cache *s;
@@ -6262,6 +6315,9 @@ static int __init slab_sysfs_init(void)
 	}
 
 	mutex_unlock(&slab_mutex);
+
+	print_all_orders();
+
 	return 0;
 }
 late_initcall(slab_sysfs_init);
