@@ -684,7 +684,7 @@ EXPORT_SYMBOL(random_kmalloc_seed);
  * of two cache sizes there. The size of larger slabs can be determined using
  * fls.
  */
-static u8 size_index[24] __ro_after_init = {
+u8 size_index[24] __ro_after_init = {
 	3,	/* 8 */
 	4,	/* 16 */
 	5,	/* 24 */
@@ -710,33 +710,6 @@ static u8 size_index[24] __ro_after_init = {
 	2,	/* 184 */
 	2	/* 192 */
 };
-
-static inline unsigned int size_index_elem(unsigned int bytes)
-{
-	return (bytes - 1) / 8;
-}
-
-/*
- * Find the kmem_cache structure that serves a given size of
- * allocation
- */
-struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags, unsigned long caller)
-{
-	unsigned int index;
-
-	if (size <= 192) {
-		if (!size)
-			return ZERO_SIZE_PTR;
-
-		index = size_index[size_index_elem(size)];
-	} else {
-		if (WARN_ON_ONCE(size > KMALLOC_MAX_CACHE_SIZE))
-			return NULL;
-		index = fls(size - 1);
-	}
-
-	return kmalloc_caches[kmalloc_type(flags, caller)][index];
-}
 
 size_t kmalloc_size_roundup(size_t size)
 {
@@ -979,50 +952,6 @@ void __init create_kmalloc_caches(slab_flags_t flags)
 	slab_state = UP;
 }
 
-static void *__kmalloc_large_node(size_t size, gfp_t flags, int node);
-static __always_inline
-void *__do_kmalloc_node(size_t size, gfp_t flags, int node, unsigned long caller)
-{
-	struct kmem_cache *s;
-	void *ret;
-
-	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
-		ret = __kmalloc_large_node(size, flags, node);
-		trace_kmalloc(caller, ret, size,
-			      PAGE_SIZE << get_order(size), flags, node);
-		return ret;
-	}
-
-	s = kmalloc_slab(size, flags, caller);
-
-	if (unlikely(ZERO_OR_NULL_PTR(s)))
-		return s;
-
-	ret = __kmem_cache_alloc_node(s, flags, node, size, caller);
-	ret = kasan_kmalloc(s, ret, size, flags);
-	trace_kmalloc(caller, ret, size, s->size, flags, node);
-	return ret;
-}
-
-void *__kmalloc_node(size_t size, gfp_t flags, int node)
-{
-	return __do_kmalloc_node(size, flags, node, _RET_IP_);
-}
-EXPORT_SYMBOL(__kmalloc_node);
-
-void *__kmalloc(size_t size, gfp_t flags)
-{
-	return __do_kmalloc_node(size, flags, NUMA_NO_NODE, _RET_IP_);
-}
-EXPORT_SYMBOL(__kmalloc);
-
-void *__kmalloc_node_track_caller(size_t size, gfp_t flags,
-				  int node, unsigned long caller)
-{
-	return __do_kmalloc_node(size, flags, node, caller);
-}
-EXPORT_SYMBOL(__kmalloc_node_track_caller);
-
 /**
  * __ksize -- Report full size of underlying allocation
  * @object: pointer to the object
@@ -1059,30 +988,6 @@ size_t __ksize(const void *object)
 	return slab_ksize(folio_slab(folio)->slab_cache);
 }
 
-void *kmalloc_trace(struct kmem_cache *s, gfp_t gfpflags, size_t size)
-{
-	void *ret = __kmem_cache_alloc_node(s, gfpflags, NUMA_NO_NODE,
-					    size, _RET_IP_);
-
-	trace_kmalloc(_RET_IP_, ret, size, s->size, gfpflags, NUMA_NO_NODE);
-
-	ret = kasan_kmalloc(s, ret, size, gfpflags);
-	return ret;
-}
-EXPORT_SYMBOL(kmalloc_trace);
-
-void *kmalloc_node_trace(struct kmem_cache *s, gfp_t gfpflags,
-			 int node, size_t size)
-{
-	void *ret = __kmem_cache_alloc_node(s, gfpflags, node, size, _RET_IP_);
-
-	trace_kmalloc(_RET_IP_, ret, size, s->size, gfpflags, node);
-
-	ret = kasan_kmalloc(s, ret, size, gfpflags);
-	return ret;
-}
-EXPORT_SYMBOL(kmalloc_node_trace);
-
 gfp_t kmalloc_fix_flags(gfp_t flags)
 {
 	gfp_t invalid_mask = flags & GFP_SLAB_BUG_MASK;
@@ -1094,57 +999,6 @@ gfp_t kmalloc_fix_flags(gfp_t flags)
 
 	return flags;
 }
-
-/*
- * To avoid unnecessary overhead, we pass through large allocation requests
- * directly to the page allocator. We use __GFP_COMP, because we will need to
- * know the allocation order to free the pages properly in kfree.
- */
-
-static void *__kmalloc_large_node(size_t size, gfp_t flags, int node)
-{
-	struct page *page;
-	void *ptr = NULL;
-	unsigned int order = get_order(size);
-
-	if (unlikely(flags & GFP_SLAB_BUG_MASK))
-		flags = kmalloc_fix_flags(flags);
-
-	flags |= __GFP_COMP;
-	page = alloc_pages_node(node, flags, order);
-	if (page) {
-		ptr = page_address(page);
-		mod_lruvec_page_state(page, NR_SLAB_UNRECLAIMABLE_B,
-				      PAGE_SIZE << order);
-	}
-
-	ptr = kasan_kmalloc_large(ptr, size, flags);
-	/* As ptr might get tagged, call kmemleak hook after KASAN. */
-	kmemleak_alloc(ptr, size, 1, flags);
-	kmsan_kmalloc_large(ptr, size, flags);
-
-	return ptr;
-}
-
-void *kmalloc_large(size_t size, gfp_t flags)
-{
-	void *ret = __kmalloc_large_node(size, flags, NUMA_NO_NODE);
-
-	trace_kmalloc(_RET_IP_, ret, size, PAGE_SIZE << get_order(size),
-		      flags, NUMA_NO_NODE);
-	return ret;
-}
-EXPORT_SYMBOL(kmalloc_large);
-
-void *kmalloc_large_node(size_t size, gfp_t flags, int node)
-{
-	void *ret = __kmalloc_large_node(size, flags, node);
-
-	trace_kmalloc(_RET_IP_, ret, size, PAGE_SIZE << get_order(size),
-		      flags, node);
-	return ret;
-}
-EXPORT_SYMBOL(kmalloc_large_node);
 
 #ifdef CONFIG_SLAB_FREELIST_RANDOM
 /* Randomize a generic freelist */
