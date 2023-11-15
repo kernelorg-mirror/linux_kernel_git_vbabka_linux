@@ -245,6 +245,8 @@ struct kmem_cache *kmem_cache_create_usercopy(const char *name,
 void kmem_cache_destroy(struct kmem_cache *s);
 int kmem_cache_shrink(struct kmem_cache *s);
 
+int kmem_cache_setup_percpu_array(struct kmem_cache *s, unsigned int count);
+
 /*
  * Please use this macro to create slab caches. Simply specify the
  * name of the structure and maybe some flags that are listed above.
@@ -565,6 +567,8 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p);
 
 int kmem_cache_alloc_bulk_noprof(struct kmem_cache *s, gfp_t flags, size_t size, void **p);
 #define kmem_cache_alloc_bulk(...)	alloc_hooks(kmem_cache_alloc_bulk_noprof(__VA_ARGS__))
+
+int kmem_cache_prefill_percpu_array(struct kmem_cache *s, unsigned int count, gfp_t gfp);
 
 static __always_inline void kfree_bulk(size_t size, void **p)
 {

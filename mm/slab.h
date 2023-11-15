@@ -245,6 +245,13 @@ struct kmem_cache_order_objects {
 	unsigned int x;
 };
 
+struct slub_percpu_array {
+	local_lock_t lock;
+	unsigned int capacity;
+	unsigned int size;
+	void *objects[];
+};
+
 /*
  * Slab cache management.
  */
@@ -252,6 +259,7 @@ struct kmem_cache {
 #ifndef CONFIG_SLUB_TINY
 	struct kmem_cache_cpu __percpu *cpu_slab;
 #endif
+	struct slub_percpu_array __percpu *cpu_array;
 	/* Used for retrieving partial slabs, etc. */
 	slab_flags_t flags;
 	unsigned long min_partial;
