@@ -13,8 +13,10 @@
 #include <linux/local_lock.h>
 
 enum stat_item {
+	ALLOC_PCA,		/* Allocation from percpu array cache */
 	ALLOC_FASTPATH,		/* Allocation from cpu slab */
 	ALLOC_SLOWPATH,		/* Allocation by getting a new cpu slab */
+	FREE_PCA,		/* Free to percpu array cache */
 	FREE_FASTPATH,		/* Free to cpu slab */
 	FREE_SLOWPATH,		/* Freeing not to cpu slab */
 	FREE_FROZEN,		/* Freeing to frozen slab */
@@ -39,6 +41,8 @@ enum stat_item {
 	CPU_PARTIAL_FREE,	/* Refill cpu partial on free */
 	CPU_PARTIAL_NODE,	/* Refill cpu partial from node partial */
 	CPU_PARTIAL_DRAIN,	/* Drain cpu partial to node partial */
+	PCA_REFILL,		/* Refilling empty percpu array cache */
+	PCA_FLUSH,		/* Flushing full percpu array cache */
 	NR_SLUB_STAT_ITEMS
 };
 
@@ -65,6 +69,13 @@ struct kmem_cache_cpu {
 #endif
 };
 #endif /* CONFIG_SLUB_TINY */
+
+struct slub_percpu_array {
+	spinlock_t lock;
+	unsigned int count;
+	unsigned int used;
+	void * objects[];
+};
 
 #ifdef CONFIG_SLUB_CPU_PARTIAL
 #define slub_percpu_partial(c)		((c)->partial)
@@ -99,6 +110,7 @@ struct kmem_cache {
 #ifndef CONFIG_SLUB_TINY
 	struct kmem_cache_cpu __percpu *cpu_slab;
 #endif
+	struct slub_percpu_array __percpu *cpu_array;
 	/* Used for retrieving partial slabs, etc. */
 	slab_flags_t flags;
 	unsigned long min_partial;

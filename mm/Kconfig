@@ -237,6 +237,7 @@ choice
 config SLAB_DEPRECATED
 	bool "SLAB (DEPRECATED)"
 	depends on !PREEMPT_RT
+	depends on BROKEN
 	help
 	  Deprecated and scheduled for removal in a few cycles. Replaced by
 	  SLUB.
