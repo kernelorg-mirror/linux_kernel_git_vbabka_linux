@@ -347,8 +347,10 @@ static inline void debugfs_slab_add(struct kmem_cache *s) { }
 #endif
 
 enum stat_item {
+	ALLOC_PCA,		/* Allocation from percpu array cache */
 	ALLOC_FASTPATH,		/* Allocation from cpu slab */
 	ALLOC_SLOWPATH,		/* Allocation by getting a new cpu slab */
+	FREE_PCA,		/* Free to percpu array cache */
 	FREE_FASTPATH,		/* Free to cpu slab */
 	FREE_SLOWPATH,		/* Freeing not to cpu slab */
 	FREE_FROZEN,		/* Freeing to frozen slab */
@@ -373,6 +375,8 @@ enum stat_item {
 	CPU_PARTIAL_FREE,	/* Refill cpu partial on free */
 	CPU_PARTIAL_NODE,	/* Refill cpu partial from node partial */
 	CPU_PARTIAL_DRAIN,	/* Drain cpu partial to node partial */
+	PCA_REFILL,		/* Refilling empty percpu array cache */
+	PCA_FLUSH,		/* Flushing full percpu array cache */
 	NR_SLUB_STAT_ITEMS
 };
 
@@ -3054,6 +3058,8 @@ struct slub_flush_work {
 	bool skip;
 };
 
+static void flush_pca(struct kmem_cache *s, unsigned int count);
+
 /*
  * Flush cpu slab.
  *
@@ -3068,6 +3074,14 @@ static void flush_cpu_slab(struct work_struct *w)
 	sfw = container_of(w, struct slub_flush_work, work);
 
 	s = sfw->s;
+
+	if (s->cpu_array) {
+		struct slub_percpu_array *pca = this_cpu_ptr(s->cpu_array);
+
+		if (pca->used)
+			flush_pca(s, pca->count);
+	}
+
 	c = this_cpu_ptr(s->cpu_slab);
 
 	if (c->slab)
@@ -3083,6 +3097,19 @@ static bool has_cpu_slab(int cpu, struct kmem_cache *s)
 	return c->slab || slub_percpu_partial(c);
 }
 
+static bool has_pca_used(int cpu, struct kmem_cache *s)
+{
+	struct slub_percpu_array *pca;
+
+	if (!s->cpu_array)
+		return false;
+
+	pca = per_cpu_ptr(s->cpu_array, cpu);
+
+	return (pca->used > 0);
+}
+
+
 static DEFINE_MUTEX(flush_lock);
 static DEFINE_PER_CPU(struct slub_flush_work, slub_flush);
 
@@ -3096,7 +3123,7 @@ static void flush_all_cpus_locked(struct kmem_cache *s)
 
 	for_each_online_cpu(cpu) {
 		sfw = &per_cpu(slub_flush, cpu);
-		if (!has_cpu_slab(cpu, s)) {
+		if (!has_cpu_slab(cpu, s) && !has_pca_used(cpu, s)) {
 			sfw->skip = true;
 			continue;
 		}
@@ -3822,6 +3849,73 @@ void slab_post_alloc_hook(struct kmem_cache *s,	struct obj_cgroup *objcg,
 	memcg_slab_post_alloc_hook(s, objcg, flags, size, p);
 }
 
+/* 
+ * Maximum number of objects allocated or freed during a single refill or flush
+ * when the percpu array is empty or flush, respectively. Translates directly to
+ * an on-stack array size.
+ */
+#define PCA_BATCH_MAX	32U
+
+static void *refill_pca(struct kmem_cache *s, unsigned int count, gfp_t gfp,
+			bool want_obj);
+
+static __fastpath_inline
+void *alloc_from_pca(struct kmem_cache *s, gfp_t gfp)
+{
+	struct slub_percpu_array *pca;
+	unsigned long flags;
+	void *object;
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+	if (unlikely(pca->used == 0)) {
+		unsigned int batch = min(pca->count / 2 + 1, PCA_BATCH_MAX);
+
+		local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+		if (!gfpflags_allow_blocking(gfp))
+			return NULL;
+
+		object = refill_pca(s, batch, gfp, true);
+
+		if (IS_ERR(object))
+			return NULL;
+
+		return object;
+	}
+
+	object = pca->objects[--pca->used];
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+	stat(s, ALLOC_PCA);
+
+	return object;
+}
+
+static __fastpath_inline
+int alloc_from_pca_bulk(struct kmem_cache *s, size_t size, void **p)
+{
+	struct slub_percpu_array *pca;
+	unsigned long flags;
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+	if (pca->used < size)
+		size = pca->used;
+
+	for (int i = size; i > 0;) {
+		p[--i] = pca->objects[--pca->used];
+	}
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+	stat_add(s, ALLOC_PCA, size);
+
+	return size;
+}
+
 /*
  * Inlined fastpath so that allocation functions (kmalloc, kmem_cache_alloc)
  * have the fastpath folded into their functions. So no function call
@@ -3847,7 +3941,11 @@ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list
 	if (unlikely(object))
 		goto out;
 
-	object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
+	if (s->cpu_array && (node == NUMA_NO_NODE))
+		object = alloc_from_pca(s, gfpflags);
+
+	if (!object)
+		object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
 
 	maybe_wipe_obj_freeptr(s, object);
 	init = slab_want_init_on_alloc(gfpflags, s);
@@ -4211,6 +4309,70 @@ slab_empty:
 	discard_slab(s, slab);
 }
 
+static void __kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p);
+
+static __fastpath_inline
+void free_to_pca(struct kmem_cache *s, void *object)
+{
+	struct slub_percpu_array *pca;
+	unsigned long flags;
+
+	stat(s, FREE_PCA);
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+	/*
+	 * the array has the entry for one extra pointer beyond count
+	 * but we must then flush immediately without unlocking
+	 */
+	pca->objects[pca->used++] = object;
+	if (unlikely(pca->used > pca->count)) {
+		unsigned int batch = min(pca->count / 2 + 1, PCA_BATCH_MAX);
+		void *objects[PCA_BATCH_MAX];
+
+		for (unsigned int i = 0; i < batch; i++)
+			objects[i] = pca->objects[--pca->used];
+
+		local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+		__kmem_cache_free_bulk(s, batch, &objects[0]);
+
+		stat_add(s, PCA_FLUSH, batch);
+
+		return;
+	}
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+}
+
+static __fastpath_inline
+size_t free_to_pca_bulk(struct kmem_cache *s, size_t size, void **p)
+{
+	struct slub_percpu_array *pca;
+	unsigned long flags;
+	bool init;
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+	if (pca->count - pca->used < size)
+		size = pca->count - pca->used;
+
+	init = slab_want_init_on_free(s);
+
+	for (size_t i = 0; i < size; i++) {
+		if (likely(slab_free_hook(s, p[i], init)))
+			pca->objects[pca->used++] = p[i];
+	}
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+	stat_add(s, FREE_PCA, size);
+
+	return size;
+}
+
 #ifndef CONFIG_SLUB_TINY
 /*
  * Fastpath with forced inlining to produce a kfree and kmem_cache_free that
@@ -4296,7 +4458,12 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
 {
 	memcg_slab_free_hook(s, slab, &object, 1);
 
-	if (likely(slab_free_hook(s, object, slab_want_init_on_free(s))))
+	if (unlikely(!slab_free_hook(s, object, slab_want_init_on_free(s))))
+		return;
+
+	if (s->cpu_array)
+		free_to_pca(s, object);
+	else
 		do_slab_free(s, slab, object, object, 1, addr);
 }
 
@@ -4516,6 +4683,26 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
 	if (!size)
 		return;
 
+	/*
+	 * In case the objects might need memcg_slab_free_hook(), skip the array
+	 * because the hook is not effective with single objects and benefits
+	 * from groups of objects from a single slab that the detached freelist
+	 * builds. But once we build the detached freelist, it's wasteful to
+	 * throw it away and put the objects into the array.
+	 *
+	 * XXX: This test could be cache-specific if it was not possible to use
+	 * __GFP_ACCOUNT with caches that are not SLAB_ACCOUNT
+	 */
+	if (s && s->cpu_array && !memcg_kmem_online()) {
+		size_t pca_freed = free_to_pca_bulk(s, size, p);
+
+		if (pca_freed == size)
+			return;
+
+		p += pca_freed;
+		size -= pca_freed;
+	}
+
 	do {
 		struct detached_freelist df;
 
@@ -4634,8 +4821,9 @@ error:
 int kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags, size_t size,
 			  void **p)
 {
-	int i;
 	struct obj_cgroup *objcg = NULL;
+	int allocated = 0;
+	int from_pca = 0;
 
 	if (!size)
 		return 0;
@@ -4645,23 +4833,151 @@ int kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags, size_t size,
 	if (unlikely(!s))
 		return 0;
 
-	i = __kmem_cache_alloc_bulk(s, flags, size, p);
+	if (s->cpu_array)
+		from_pca = alloc_from_pca_bulk(s, size, p);
+
+	if (from_pca < size) {
+		allocated = __kmem_cache_alloc_bulk(s, flags, size-from_pca,
+						    p+from_pca);
+		if (allocated == 0 && from_pca > 0) {
+			__kmem_cache_free_bulk(s, from_pca, p);
+		}
+	}
+
+	allocated += from_pca;
 
 	/*
 	 * memcg and kmem_cache debug support and memory initialization.
 	 * Done outside of the IRQ disabled fastpath loop.
 	 */
-	if (likely(i != 0)) {
+	if (likely(allocated != 0)) {
 		slab_post_alloc_hook(s, objcg, flags, size, p,
 			slab_want_init_on_alloc(flags, s), s->object_size);
 	} else {
 		memcg_slab_alloc_error_hook(s, size, objcg);
 	}
 
-	return i;
+	return allocated;
 }
 EXPORT_SYMBOL(kmem_cache_alloc_bulk);
 
+static void *refill_pca(struct kmem_cache *s, unsigned int count, gfp_t gfp,
+			bool want_obj)
+{
+	unsigned int batch, allocated;
+	struct slub_percpu_array *pca;
+	void *objects[PCA_BATCH_MAX];
+	unsigned long flags;
+	void *obj = NULL;
+
+	if (count > PCA_BATCH_MAX)
+		return ERR_PTR(-EINVAL);
+
+	allocated = __kmem_cache_alloc_bulk(s, gfp, count, &objects[0]);
+	if (!allocated)
+		return false;
+
+	if (want_obj)
+		obj = objects[--allocated];
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+	batch = min(allocated, pca->count - pca->used);
+
+	for (unsigned int i = 0; i < batch; i++)
+		pca->objects[pca->used++] = objects[i];
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+	stat_add(s, PCA_REFILL, batch);
+
+	/*
+	 * We could have migrated to a different cpu or somebody else freed to the
+	 * pca while we were bulk allocating, and now we have too many objects
+	 */
+	if (batch < allocated)
+		__kmem_cache_free_bulk(s, allocated - batch, &objects[batch]);
+
+	return obj;
+}
+
+static void flush_pca(struct kmem_cache *s, unsigned int count)
+{
+	struct slub_percpu_array *pca;
+	unsigned int batch, remaining;
+	void *objects[PCA_BATCH_MAX];
+	unsigned long flags;
+
+	local_lock_irqsave(&s->cpu_array->lock, flags);
+	pca = this_cpu_ptr(s->cpu_array);
+
+next_batch:
+	batch = min(count, PCA_BATCH_MAX);
+
+	batch = min(batch, pca->used);
+
+	for (unsigned int i = 0; i < batch; i++) {
+		objects[i] = pca->objects[--pca->used];
+	}
+
+	remaining = pca->used;
+
+	local_unlock_irqrestore(&s->cpu_array->lock, flags);
+
+	__kmem_cache_free_bulk(s, batch, &objects[0]);
+
+	stat_add(s, PCA_FLUSH, batch);
+
+	if (batch < count && remaining > 0) {
+		count -= batch;
+		local_lock_irqsave(&s->cpu_array->lock, flags);
+		pca = this_cpu_ptr(s->cpu_array);
+		goto next_batch;
+	}
+}
+
+int kmem_cache_prefill_percpu_array(struct kmem_cache *s, unsigned int count,
+				    gfp_t gfp)
+{
+	struct slub_percpu_array *pca;
+	unsigned int used, batch;
+	void *refill;
+
+	if (!gfpflags_allow_blocking(gfp))
+		return -EINVAL;
+
+	if (!s->cpu_array)
+		return -EINVAL;
+
+	/* racy but we don't care */
+	pca = raw_cpu_ptr(s->cpu_array);
+
+	if (pca->count < count)
+		return -EINVAL;
+
+	used = READ_ONCE(pca->used);
+	if (used >= count)
+		return 0;
+
+	count -= used;
+
+refill:
+	batch = min(count, PCA_BATCH_MAX);
+
+	refill = refill_pca(s, batch, gfp, false);
+	if (IS_ERR(refill))
+		return PTR_ERR(refill);
+
+	count -= batch;
+	if (count) {
+		pca = raw_cpu_ptr(s->cpu_array);
+		if (pca->used < pca->count)
+			goto refill;
+	}
+
+	return 0;
+}
 
 /*
  * Object placement in a slab is made very easy because we always start at
@@ -4897,6 +5213,8 @@ static void free_kmem_cache_nodes(struct kmem_cache *s)
 void __kmem_cache_release(struct kmem_cache *s)
 {
 	cache_random_seq_destroy(s);
+	if (s->cpu_array)
+		free_percpu(s->cpu_array);
 #ifndef CONFIG_SLUB_TINY
 	free_percpu(s->cpu_slab);
 #endif
@@ -5733,6 +6051,68 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
 	return 0;
 }
 
+/**
+ * kmem_cache_setup_percpu_array - Create a per-cpu array cache for the cache
+ * @s: The cache to add per-cpu array. Must be created with SLAB_NO_MERGE flag.
+ * @count: Size of the per-cpu array.
+ *
+ * After this call, allocations from the cache go through a percpu array. When
+ * it becomes empty, and gfp flags allow blocking, half is refilled with a bulk
+ * allocation. When it becomes full, half is flushed with a bulk free operation.
+ *
+ * The array cache does not distinguish NUMA nodes, so allocations via
+ * kmem_cache_alloc_node() with a node specified other than NUMA_NO_NODE will
+ * bypass the cache.
+ *
+ * Bulk allocation and free operations also try to use the array.
+ *
+ * kmem_cache_prefill_percpu_array() can be used to pre-fill the array cache
+ * before e.g. entering a restricted context. It is however not guaranteed that
+ * the caller will be able to subsequently consume the prefilled cache. Such
+ * failures should be however sufficiently rare so after the prefill,
+ * allocations using GFP_ATOMIC | __GFP_NOFAIL are acceptable for objects up to
+ * the prefilled amount.
+ *
+ * Limitations: when slub_debug is enabled for the cache, all relevant actions
+ * (i.e. poisoning, obtaining stacktraces) and checks happen when objects move
+ * between the array cache and slab pages, which may result in e.g. not
+ * detecting a use-after-free while the object is in the array cache, and the
+ * stacktraces may be less useful.
+ *
+ * Return: 0 if OK, -EINVAL on caches without SLAB_NO_MERGE or with the array
+ * already created, -ENOMEM when the per-cpu array creation fails.
+ */
+int kmem_cache_setup_percpu_array(struct kmem_cache *s, unsigned int count)
+{
+	int cpu;
+
+	if (WARN_ON_ONCE(!(s->flags & SLAB_NO_MERGE)))
+		return -EINVAL;
+
+	if (s->cpu_array)
+		return -EINVAL;
+
+	/*
+	 * the object array is the desired count + 1 so we can fit the object
+	 * that triggers the need for flushing
+	 */
+	s->cpu_array = __alloc_percpu(struct_size(s->cpu_array, objects,
+						count +	1), sizeof(void *));
+
+	if (!s->cpu_array)
+		return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		struct slub_percpu_array *pca = per_cpu_ptr(s->cpu_array, cpu);
+
+		local_lock_init(&pca->lock);
+		pca->count = count;
+		pca->used = 0;
+	}
+
+	return 0;
+}
+
 #ifdef SLAB_SUPPORTS_SYSFS
 static int count_inuse(struct slab *slab)
 {
@@ -6510,8 +6890,10 @@ static ssize_t text##_store(struct kmem_cache *s,		\
 }								\
 SLAB_ATTR(text);						\
 
+STAT_ATTR(ALLOC_PCA, alloc_cpu_cache);
 STAT_ATTR(ALLOC_FASTPATH, alloc_fastpath);
 STAT_ATTR(ALLOC_SLOWPATH, alloc_slowpath);
+STAT_ATTR(FREE_PCA, free_cpu_cache);
 STAT_ATTR(FREE_FASTPATH, free_fastpath);
 STAT_ATTR(FREE_SLOWPATH, free_slowpath);
 STAT_ATTR(FREE_FROZEN, free_frozen);
@@ -6536,6 +6918,8 @@ STAT_ATTR(CPU_PARTIAL_ALLOC, cpu_partial_alloc);
 STAT_ATTR(CPU_PARTIAL_FREE, cpu_partial_free);
 STAT_ATTR(CPU_PARTIAL_NODE, cpu_partial_node);
 STAT_ATTR(CPU_PARTIAL_DRAIN, cpu_partial_drain);
+STAT_ATTR(PCA_REFILL, cpu_cache_refill);
+STAT_ATTR(PCA_FLUSH, cpu_cache_flush);
 #endif	/* CONFIG_SLUB_STATS */
 
 #ifdef CONFIG_KFENCE
@@ -6597,8 +6981,10 @@ static struct attribute *slab_attrs[] = {
 	&remote_node_defrag_ratio_attr.attr,
 #endif
 #ifdef CONFIG_SLUB_STATS
+	&alloc_cpu_cache_attr.attr,
 	&alloc_fastpath_attr.attr,
 	&alloc_slowpath_attr.attr,
+	&free_cpu_cache_attr.attr,
 	&free_fastpath_attr.attr,
 	&free_slowpath_attr.attr,
 	&free_frozen_attr.attr,
@@ -6623,6 +7009,8 @@ static struct attribute *slab_attrs[] = {
 	&cpu_partial_free_attr.attr,
 	&cpu_partial_node_attr.attr,
 	&cpu_partial_drain_attr.attr,
+	&cpu_cache_refill_attr.attr,
+	&cpu_cache_flush_attr.attr,
 #endif
 #ifdef CONFIG_FAILSLAB
 	&failslab_attr.attr,
