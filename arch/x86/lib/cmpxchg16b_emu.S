@@ -52,3 +52,5 @@ SYM_FUNC_START(this_cpu_cmpxchg16b_emu)
 	RET
 
 SYM_FUNC_END(this_cpu_cmpxchg16b_emu)
+
+EXPORT_SYMBOL(this_cpu_cmpxchg16b_emu)
