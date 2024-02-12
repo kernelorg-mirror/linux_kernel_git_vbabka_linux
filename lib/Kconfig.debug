@@ -2574,6 +2574,15 @@ config FIND_BIT_BENCHMARK
 
 	  If unsure, say N.
 
+config LOCKING_BENCHMARK
+	tristate "Benchmark (pcp) locking primitives"
+	help
+	  This builds the "locking-benchmark" module that measures performance
+	  of various primitives and schemes for pcp structures locking or
+	  atomic updates.
+
+	  If unsure, say N.
+
 config TEST_FIRMWARE
 	tristate "Test firmware loading via userspace interface"
 	depends on FW_LOADER

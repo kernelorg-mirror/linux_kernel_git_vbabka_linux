@@ -138,6 +138,7 @@ obj-$(CONFIG_GENERIC_IOMAP) += iomap.o
 obj-$(CONFIG_HAS_IOMEM) += iomap_copy.o devres.o
 obj-$(CONFIG_CHECK_SIGNATURE) += check_signature.o
 obj-$(CONFIG_DEBUG_LOCKING_API_SELFTESTS) += locking-selftest.o
+obj-$(CONFIG_LOCKING_BENCHMARK) += locking-benchmark.o
 
 lib-y += logic_pio.o
 
