@@ -3947,7 +3947,7 @@ struct kmem_cache *slab_pre_alloc_hook(struct kmem_cache *s, gfp_t flags)
 static __fastpath_inline
 bool slab_post_alloc_hook(struct kmem_cache *s, struct list_lru *lru,
 			  gfp_t flags, size_t size, void **p, bool init,
-			  unsigned int orig_size)
+			  bool skip_memcg, unsigned int orig_size)
 {
 	unsigned int zero_size = s->object_size;
 	bool kasan_init = init;
@@ -3995,6 +3995,9 @@ bool slab_post_alloc_hook(struct kmem_cache *s, struct list_lru *lru,
 		alloc_tagging_slab_alloc_hook(s, p[i], flags);
 	}
 
+	if (skip_memcg)
+		return true;
+
 	return memcg_slab_post_alloc_hook(s, lru, flags, size, p);
 }
 
@@ -4034,7 +4037,7 @@ out:
 	 * In case this fails due to memcg_slab_post_alloc_hook(),
 	 * object is set to NULL
 	 */
-	slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size);
+	slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, false, orig_size);
 
 	return object;
 }
@@ -4837,7 +4840,7 @@ int kmem_cache_alloc_bulk_noprof(struct kmem_cache *s, gfp_t flags, size_t size,
 	 * Done outside of the IRQ disabled fastpath loop.
 	 */
 	if (unlikely(!slab_post_alloc_hook(s, NULL, flags, size, p,
-		    slab_want_init_on_alloc(flags, s), s->object_size))) {
+		    slab_want_init_on_alloc(flags, s), false, s->object_size))) {
 		return 0;
 	}
 	return i;
@@ -5417,6 +5420,321 @@ int __kmem_cache_shutdown(struct kmem_cache *s)
 			return 1;
 	}
 	return 0;
+}
+
+static bool __kmem_cache_reserve_resize(struct kmem_cache_reserve *reserve,
+					unsigned int nr_objects)
+{
+	struct kmem_cache *s = reserve->cache;
+	unsigned long flags;
+	void *obj;
+
+	spin_lock_irqsave(&s->reserve_lock, flags);
+
+	while (reserve->capacity > nr_objects) {
+
+		if (reserve->size < reserve->capacity &&
+		    s->reserve_size < s->reserve_booked) {
+			reserve->capacity--;
+			s->reserve_booked--;
+			continue;
+		}
+
+		if (s->reserve_size < s->reserve_booked) {
+			reserve->size--;
+			reserve->capacity--;
+			s->reserve_surplus++;
+			continue;
+		}
+
+
+		obj = s->reserve_freelist;
+		s->reserve_freelist = get_freepointer(s, obj);
+
+		reserve->size--;
+		reserve->capacity--;
+		s->reserve_size--;
+		s->reserve_booked--;
+
+		spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+		do_slab_free(s, virt_to_slab(obj), obj, obj, 1, _RET_IP_);
+
+		spin_lock_irqsave(&s->reserve_lock, flags);
+
+	}
+
+	while (reserve->size < nr_objects) {
+
+		if (reserve->size < reserve->capacity && s->reserve_surplus) {
+			reserve->size++;
+			s->reserve_surplus--;
+			continue;
+		}
+
+		spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+		obj = __slab_alloc_node(s, GFP_KERNEL, NUMA_NO_NODE, _THIS_IP_,
+				s->object_size);
+
+		if (!obj)
+			return false;
+
+		spin_lock_irqsave(&s->reserve_lock, flags);
+
+		set_freepointer(s, obj, s->reserve_freelist);
+		s->reserve_freelist = obj;
+
+		reserve->size++;
+		s->reserve_size++;
+		if (reserve->capacity < nr_objects) {
+			reserve->capacity++;
+			s->reserve_booked++;
+		}
+	}
+
+	spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+	return true;
+}
+
+struct kmem_cache_reserve *
+kmem_cache_reserve_create(struct kmem_cache *s, unsigned int nr_objects)
+{
+	struct kmem_cache_reserve *reserve;
+
+	reserve = kmalloc(sizeof(*reserve), GFP_KERNEL);
+	if (!reserve)
+		return NULL;
+
+	reserve->cache = s;
+	reserve->size = 0;
+	reserve->capacity = 0;
+	reserve->objsize = s->object_size;
+
+	if (!__kmem_cache_reserve_resize(reserve, nr_objects)) {
+		if (reserve->size)
+			__kmem_cache_reserve_resize(reserve, 0);
+		kfree(reserve);
+		return NULL;
+	}
+
+	return reserve;
+}
+
+
+struct kmem_cache_reserve *
+__kmalloc_reserve_create(size_t size, int nr_objects, unsigned long caller)
+{
+	struct kmem_cache_reserve *reserve;
+	struct kmem_cache *s;
+
+	s = kmalloc_slab(size, NULL, GFP_KERNEL, caller);
+
+	reserve = kmem_cache_reserve_create(s, nr_objects);
+
+	if (reserve)
+		reserve->objsize = size;
+
+	return reserve;
+}
+
+
+int kmem_cache_reserve_resize(struct kmem_cache_reserve *reserve,
+                              unsigned int nr_objects)
+{
+	if (!__kmem_cache_reserve_resize(reserve, nr_objects))
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void *__kmem_cache_reserve_alloc(struct kmem_cache_reserve *reserve,
+				        gfp_t gfp, bool reserve_only)
+{
+	struct kmem_cache *s = reserve->cache;
+	wait_queue_entry_t wait;
+	unsigned long flags;
+	bool waited = false;
+	void *obj = NULL;
+
+repeat:
+	if (likely(!reserve_only)) {
+		if (s->flags & SLAB_KMALLOC)
+			obj = __kmalloc_cache_noprof(s, gfp | __GFP_NOWARN,
+					reserve->objsize);
+		else
+			obj = kmem_cache_alloc_noprof(s, gfp | __GFP_NOWARN);
+
+		if (likely(obj)) {
+			/*
+			 * we might have waited but then succeeded without
+			 * consuming the object that was returned to the
+			 * reserve so wake up the next waiting task
+			 */
+			if (unlikely(waited))
+				wake_up(&s->reserve_wait);
+			return obj;
+		}
+	}
+
+	spin_lock_irqsave(&s->reserve_lock, flags);
+
+	if (!reserve->size && !s->reserve_surplus)
+		goto empty_reserve;
+
+	/*
+	 * Should not happen, the kmem_cache reserve_size should be sum of all
+	 * active struct kmem_cache_reserve's size and the shared surplus
+	 */
+	if (WARN_ON_ONCE(!s->reserve_size))
+		goto empty_reserve;
+
+	obj = s->reserve_freelist;
+	s->reserve_freelist = get_freepointer(s, obj);
+
+	s->reserve_size--;
+
+	if (reserve->size)
+		reserve->size--;
+	else
+		s->reserve_surplus--;
+
+	spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+	/* We skip memcg so this cannot fail */
+	slab_post_alloc_hook(s, NULL, gfp | __GFP_HIGH, 1, &obj,
+		slab_want_init_on_alloc(gfp, s), true, reserve->objsize);
+
+	if (s->flags & SLAB_KMALLOC)
+		obj = kasan_kmalloc(s, obj, reserve->objsize, gfp);
+
+	/* TODO ideally we would update the slub_debug tracking here */
+
+	/* paired with smp_rmb() in kmem_cache_reserve_free() */
+	smp_wmb();
+
+	return obj;
+
+empty_reserve:
+
+	if (!gfpflags_allow_blocking(gfp)) {
+		spin_unlock_irqrestore(&s->reserve_lock, flags);
+		return NULL;
+	}
+
+	init_wait(&wait);
+	prepare_to_wait(&s->reserve_wait, &wait, TASK_UNINTERRUPTIBLE);
+
+	spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+	io_schedule();
+
+	finish_wait(&s->reserve_wait, &wait);
+
+	waited = true;
+
+	goto repeat;
+}
+
+void *kmem_cache_reserve_alloc_noprof(struct kmem_cache_reserve *reserve,
+				      gfp_t gfp)
+{
+	return __kmem_cache_reserve_alloc(reserve, gfp, false);
+}
+
+void *kmem_cache_reserve_only_alloc_noprof(struct kmem_cache_reserve *reserve,
+					   gfp_t gfp)
+{
+	return __kmem_cache_reserve_alloc(reserve, gfp, true);
+}
+
+void kmem_cache_reserve_free(struct kmem_cache_reserve *reserve, void *x)
+{
+	struct kmem_cache *s;
+	unsigned long flags;
+
+	if (unlikely(x == NULL))
+		return;
+
+	s = cache_from_obj(reserve->cache, x);
+	if (!s)
+		return;
+
+	/*
+	 * paired with smp_wmb() in kmem_cache_reserve_alloc_noprof()
+	 * see the discussion in mempool_free() for details
+	 */
+	smp_rmb();
+
+	if (likely(READ_ONCE(s->reserve_size) >= s->reserve_booked))
+		goto check_surplus;
+
+	spin_lock_irqsave(&s->reserve_lock, flags);
+	if (likely(s->reserve_size < s->reserve_booked)) {
+		/*
+		 * If the object was from kfence, it didn't come from the
+		 * reserve so it's fine that we lose it here.
+		 * TODO: But kasan quarantine of an object that was from
+		 * the reserve is less ideal, is there a way to prevent it?
+		 */
+		if (!slab_free_hook(s, x, slab_want_init_on_free(s))) {
+			spin_unlock_irqrestore(&s->reserve_lock, flags);
+			return;
+		}
+
+		set_freepointer(s, x, s->reserve_freelist);
+		s->reserve_freelist = x;
+
+		s->reserve_size++;
+
+		/*
+		 * we could have prioritized refilling our reserve but then we
+		 * could have woken a task with a different reserve that
+		 * wouldn't be able to use it. We would have to use
+		 * wake_up_all() to be sure. So instead increase the surplus
+		 * which any waiting task can use. If that user is waiting it
+		 * means they will also free an object eventually.
+		 */
+		s->reserve_surplus++;
+
+		spin_unlock_irqrestore(&s->reserve_lock, flags);
+		wake_up(&s->reserve_wait);
+		return;
+	}
+	spin_unlock_irqrestore(&s->reserve_lock, flags);
+
+	/*
+	 * Somebody else could have refilled the cache's reserve that we used
+	 * and subtracted from our kmem_cache_reserve, and counted it as the
+	 * cache's surplus, so claim it now
+	 */
+check_surplus:
+
+	if (unlikely(READ_ONCE(reserve->size) < reserve->capacity &&
+		     s->reserve_surplus)) {
+		unsigned int surplus;
+
+		spin_lock_irqsave(&s->reserve_lock, flags);
+
+		surplus = min(reserve->capacity - reserve->size,
+			      s->reserve_surplus);
+
+		s->reserve_surplus -= surplus;
+		reserve->size += surplus;
+
+		spin_unlock_irqrestore(&s->reserve_lock, flags);
+	}
+
+	trace_kmem_cache_free(_RET_IP_, x, s);
+	slab_free(s, virt_to_slab(x), x, _RET_IP_);
+}
+
+void kmem_cache_reserve_destroy(struct kmem_cache_reserve *reserve)
+{
+	__kmem_cache_reserve_resize(reserve, 0);
+
+	kfree(reserve);
 }
 
 #ifdef CONFIG_PRINTK

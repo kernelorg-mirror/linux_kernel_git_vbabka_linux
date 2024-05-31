@@ -306,7 +306,21 @@ struct kmem_cache {
 	unsigned int usersize;		/* Usercopy region size */
 #endif
 
+	spinlock_t reserve_lock;
+	void *reserve_freelist;
+	unsigned int reserve_size;	/* how many on reserve_freelist */
+	unsigned int reserve_booked;	/* sum of all promised reserves */
+	unsigned int reserve_surplus;	/* unclaimed by struct reserves */
+	wait_queue_head_t reserve_wait;
+
 	struct kmem_cache_node *node[MAX_NUMNODES];
+};
+
+struct kmem_cache_reserve {
+	struct kmem_cache *cache;
+	unsigned int size;
+	unsigned int capacity;
+	unsigned int objsize;	/* for debugging purposes */
 };
 
 #if defined(CONFIG_SYSFS) && !defined(CONFIG_SLUB_TINY)
@@ -396,6 +410,9 @@ static inline unsigned int size_index_elem(unsigned int bytes)
 {
 	return (bytes - 1) / 8;
 }
+
+struct kmem_cache_reserve *
+__kmalloc_reserve_create(size_t size, int nr_objects, unsigned long caller);
 
 /*
  * Find the kmem_cache structure that serves a given size of

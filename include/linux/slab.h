@@ -229,6 +229,7 @@ enum _slab_flag_bits {
 
 struct list_lru;
 struct mem_cgroup;
+struct kmem_cache_reserve;
 /*
  * struct kmem_cache related prototypes
  */
@@ -849,6 +850,26 @@ extern void kvfree(const void *addr);
 DEFINE_FREE(kvfree, void *, if (!IS_ERR_OR_NULL(_T)) kvfree(_T))
 
 extern void kvfree_sensitive(const void *addr, size_t len);
+
+struct kmem_cache_reserve *
+kmem_cache_reserve_create(struct kmem_cache *s, unsigned int nr_objects);
+
+int kmem_cache_reserve_resize(struct kmem_cache_reserve *reserve,
+			      unsigned int nr_objects);
+
+void kmem_cache_reserve_destroy(struct kmem_cache_reserve *reserve);
+
+void *kmem_cache_reserve_alloc_noprof(struct kmem_cache_reserve *reserve,
+				      gfp_t flags)
+					__assume_slab_alignment __malloc;
+#define kmem_cache_reserve_alloc(...)		alloc_hooks(kmem_cache_reserve_alloc_noprof(__VA_ARGS__))
+
+void *kmem_cache_reserve_only_alloc_noprof(struct kmem_cache_reserve *reserve,
+					   gfp_t flags)
+					__assume_slab_alignment __malloc;
+#define kmem_cache_reserve_only_alloc(...)	alloc_hooks(kmem_cache_reserve_only_alloc_noprof(__VA_ARGS__))
+
+void kmem_cache_reserve_free(struct kmem_cache_reserve *reserve, void *objp);
 
 unsigned int kmem_cache_size(struct kmem_cache *s);
 
