@@ -15,6 +15,11 @@ struct kmem_cache;
 typedef void * (mempool_alloc_t)(gfp_t gfp_mask, void *pool_data);
 typedef void (mempool_free_t)(void *element, void *pool_data);
 
+enum mempool_type {
+	MEMPOOL_TYPE_NORMAL,
+	MEMPOOL_TYPE_KMEM_RESERVE,
+};
+
 typedef struct mempool_s {
 	spinlock_t lock;
 	int min_nr;		/* nr of elements at *elements */
@@ -25,6 +30,8 @@ typedef struct mempool_s {
 	mempool_alloc_t *alloc;
 	mempool_free_t *free;
 	wait_queue_head_t wait;
+
+	enum mempool_type type;
 } mempool_t;
 
 static inline bool mempool_initialized(mempool_t *pool)
@@ -32,8 +39,12 @@ static inline bool mempool_initialized(mempool_t *pool)
 	return pool->elements != NULL;
 }
 
+bool mempool_slab_pool_saturated(mempool_t *pool);
+
 static inline bool mempool_is_saturated(mempool_t *pool)
 {
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return mempool_slab_pool_saturated(pool);
 	return READ_ONCE(pool->curr_nr) >= pool->min_nr;
 }
 
@@ -78,10 +89,8 @@ extern void mempool_free(void *element, mempool_t *pool);
 void *mempool_alloc_slab(gfp_t gfp_mask, void *pool_data);
 void mempool_free_slab(void *element, void *pool_data);
 
-#define mempool_init_slab_pool(_pool, _min_nr, _kc)			\
-	mempool_init(_pool, (_min_nr), mempool_alloc_slab, mempool_free_slab, (void *)(_kc))
-#define mempool_create_slab_pool(_min_nr, _kc)			\
-	mempool_create((_min_nr), mempool_alloc_slab, mempool_free_slab, (void *)(_kc))
+int mempool_init_slab_pool(mempool_t *pool, int min_nr, struct kmem_cache *kc);
+mempool_t *mempool_create_slab_pool(int min_nr, struct kmem_cache *kc);
 
 /*
  * a mempool_alloc_t and a mempool_free_t to kmalloc and kfree the

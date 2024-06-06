@@ -152,6 +152,13 @@ static void *remove_element(mempool_t *pool)
 	return element;
 }
 
+bool mempool_slab_pool_saturated(mempool_t *pool)
+{
+	struct kmem_cache_reserve *kcr = pool->pool_data;
+
+	return (READ_ONCE(kcr->size) == kcr->capacity);
+}
+
 /**
  * mempool_exit - exit a mempool initialized with mempool_init()
  * @pool:      pointer to the memory pool which was initialized with
@@ -165,6 +172,9 @@ static void *remove_element(mempool_t *pool)
  */
 void mempool_exit(mempool_t *pool)
 {
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return kmem_cache_reserve_destroy(pool->pool_data);
+
 	while (pool->curr_nr) {
 		void *element = remove_element(pool);
 		pool->free(element, pool->pool_data);
@@ -249,6 +259,22 @@ int mempool_init_noprof(mempool_t *pool, int min_nr, mempool_alloc_t *alloc_fn,
 }
 EXPORT_SYMBOL(mempool_init_noprof);
 
+int mempool_init_slab_pool(mempool_t *pool, int min_nr, struct kmem_cache *kc)
+{
+	struct kmem_cache_reserve *kcr;
+
+	kcr = kmem_cache_reserve_create(kc, min_nr);
+	if (!kcr)
+		return -ENOMEM;
+
+	pool->type = MEMPOOL_TYPE_KMEM_RESERVE;
+	pool->pool_data = kcr;
+	pool->elements = ZERO_SIZE_PTR;
+
+	return 0;
+}
+EXPORT_SYMBOL(mempool_init_slab_pool);
+
 /**
  * mempool_create_node - create a memory pool
  * @min_nr:    the minimum number of elements guaranteed to be
@@ -287,6 +313,23 @@ mempool_t *mempool_create_node_noprof(int min_nr, mempool_alloc_t *alloc_fn,
 }
 EXPORT_SYMBOL(mempool_create_node_noprof);
 
+mempool_t *mempool_create_slab_pool(int min_nr, struct kmem_cache *kc)
+{
+	mempool_t *pool;
+
+	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	if (!pool)
+		return NULL;
+
+	if (mempool_init_slab_pool(pool, min_nr, kc)) {
+		kfree(pool);
+		return NULL;
+	}
+
+	return pool;
+}
+EXPORT_SYMBOL(mempool_create_slab_pool);
+
 /**
  * mempool_resize - resize an existing memory pool
  * @pool:       pointer to the memory pool which was allocated via
@@ -313,6 +356,9 @@ int mempool_resize(mempool_t *pool, int new_min_nr)
 
 	BUG_ON(new_min_nr <= 0);
 	might_sleep();
+
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return kmem_cache_reserve_resize(pool->pool_data, new_min_nr);
 
 	spin_lock_irqsave(&pool->lock, flags);
 	if (new_min_nr <= pool->min_nr) {
@@ -387,6 +433,9 @@ void *mempool_alloc_noprof(mempool_t *pool, gfp_t gfp_mask)
 	unsigned long flags;
 	wait_queue_entry_t wait;
 	gfp_t gfp_temp;
+
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return kmem_cache_reserve_alloc_noprof(pool->pool_data, gfp_mask);
 
 	VM_WARN_ON_ONCE(gfp_mask & __GFP_ZERO);
 	might_alloc(gfp_mask);
@@ -468,6 +517,9 @@ void *mempool_alloc_preallocated(mempool_t *pool)
 	void *element;
 	unsigned long flags;
 
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return kmem_cache_reserve_only_alloc(pool->pool_data, GFP_NOWAIT);
+
 	spin_lock_irqsave(&pool->lock, flags);
 	if (likely(pool->curr_nr)) {
 		element = remove_element(pool);
@@ -501,6 +553,9 @@ void mempool_free(void *element, mempool_t *pool)
 
 	if (unlikely(element == NULL))
 		return;
+
+	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
+		return kmem_cache_reserve_free(pool->pool_data, element);
 
 	/*
 	 * Paired with the wmb in mempool_alloc().  The preceding read is
