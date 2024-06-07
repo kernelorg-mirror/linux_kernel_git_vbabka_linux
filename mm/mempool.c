@@ -206,6 +206,10 @@ int mempool_init_node(mempool_t *pool, int min_nr, mempool_alloc_t *alloc_fn,
 		      mempool_free_t *free_fn, void *pool_data,
 		      gfp_t gfp_mask, int node_id)
 {
+	if (alloc_fn == mempool_alloc_slab &&
+	    !WARN_ON_ONCE(free_fn != mempool_free_slab))
+		return mempool_init_slab_pool(pool, min_nr, pool_data);
+
 	spin_lock_init(&pool->lock);
 	pool->min_nr	= min_nr;
 	pool->pool_data = pool_data;
@@ -611,6 +615,7 @@ void *mempool_alloc_slab(gfp_t gfp_mask, void *pool_data)
 {
 	struct kmem_cache *mem = pool_data;
 	VM_BUG_ON(mem->ctor);
+	WARN_ON_ONCE(1);
 	return kmem_cache_alloc_noprof(mem, gfp_mask);
 }
 EXPORT_SYMBOL(mempool_alloc_slab);
@@ -618,6 +623,7 @@ EXPORT_SYMBOL(mempool_alloc_slab);
 void mempool_free_slab(void *element, void *pool_data)
 {
 	struct kmem_cache *mem = pool_data;
+	WARN_ON_ONCE(1);
 	kmem_cache_free(mem, element);
 }
 EXPORT_SYMBOL(mempool_free_slab);
