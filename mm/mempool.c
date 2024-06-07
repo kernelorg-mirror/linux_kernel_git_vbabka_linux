@@ -60,12 +60,7 @@ static void check_element(mempool_t *pool, void *element)
 	if (kasan_enabled())
 		return;
 
-	/* Mempools backed by slab allocator */
-	if (pool->free == mempool_kfree) {
-		__check_element(pool, element, (size_t)pool->pool_data);
-	} else if (pool->free == mempool_free_slab) {
-		__check_element(pool, element, kmem_cache_size(pool->pool_data));
-	} else if (pool->free == mempool_free_pages) {
+	if (pool->free == mempool_free_pages) {
 		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
 		void *addr = kmap_local_page((struct page *)element);
@@ -89,12 +84,7 @@ static void poison_element(mempool_t *pool, void *element)
 	if (kasan_enabled())
 		return;
 
-	/* Mempools backed by slab allocator */
-	if (pool->alloc == mempool_kmalloc) {
-		__poison_element(element, (size_t)pool->pool_data);
-	} else if (pool->alloc == mempool_alloc_slab) {
-		__poison_element(element, kmem_cache_size(pool->pool_data));
-	} else if (pool->alloc == mempool_alloc_pages) {
+	if (pool->alloc == mempool_alloc_pages) {
 		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
 		void *addr = kmap_local_page((struct page *)element);
@@ -112,9 +102,23 @@ static inline void poison_element(mempool_t *pool, void *element)
 }
 #endif /* CONFIG_SLUB_DEBUG_ON */
 
+/*
+ * These are now only used internally for large kmalloc allocations
+ */
+static void *mempool_kmalloc(gfp_t gfp_mask, void *pool_data)
+{
+	size_t size = (size_t)pool_data;
+	return kmalloc_noprof(size, gfp_mask);
+}
+
+static void mempool_kfree(void *element, void *pool_data)
+{
+	kfree(element);
+}
+
 static __always_inline bool kasan_poison_element(mempool_t *pool, void *element)
 {
-	if (pool->alloc == mempool_alloc_slab || pool->alloc == mempool_kmalloc)
+	if (pool->alloc == mempool_kmalloc)
 		return kasan_mempool_poison_object(element);
 	else if (pool->alloc == mempool_alloc_pages)
 		return kasan_mempool_poison_pages(element,
@@ -126,9 +130,6 @@ static void kasan_unpoison_element(mempool_t *pool, void *element)
 {
 	if (pool->alloc == mempool_kmalloc)
 		kasan_mempool_unpoison_object(element, (size_t)pool->pool_data);
-	else if (pool->alloc == mempool_alloc_slab)
-		kasan_mempool_unpoison_object(element,
-					      kmem_cache_size(pool->pool_data));
 	else if (pool->alloc == mempool_alloc_pages)
 		kasan_mempool_unpoison_pages(element,
 					     (unsigned long)pool->pool_data);
@@ -671,23 +672,6 @@ void mempool_free_slab(void *element, void *pool_data)
 	kmem_cache_free(mem, element);
 }
 EXPORT_SYMBOL(mempool_free_slab);
-
-/*
- * A commonly used alloc and free fn that kmalloc/kfrees the amount of memory
- * specified by pool_data
- */
-void *mempool_kmalloc(gfp_t gfp_mask, void *pool_data)
-{
-	size_t size = (size_t)pool_data;
-	return kmalloc_noprof(size, gfp_mask);
-}
-EXPORT_SYMBOL(mempool_kmalloc);
-
-void mempool_kfree(void *element, void *pool_data)
-{
-	kfree(element);
-}
-EXPORT_SYMBOL(mempool_kfree);
 
 void *mempool_kvmalloc(gfp_t gfp_mask, void *pool_data)
 {

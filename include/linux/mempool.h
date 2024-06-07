@@ -92,13 +92,6 @@ void mempool_free_slab(void *element, void *pool_data);
 int mempool_init_slab_pool(mempool_t *pool, int min_nr, struct kmem_cache *kc);
 mempool_t *mempool_create_slab_pool(int min_nr, struct kmem_cache *kc);
 
-/*
- * a mempool_alloc_t and a mempool_free_t to kmalloc and kfree the
- * amount of memory specified by pool_data
- */
-void *mempool_kmalloc(gfp_t gfp_mask, void *pool_data);
-void mempool_kfree(void *element, void *pool_data);
-
 int mempool_init_kmalloc_pool(mempool_t *pool, int min_nr, size_t size);
 mempool_t *mempool_create_kmalloc_pool(int min_nr, size_t size);
 
