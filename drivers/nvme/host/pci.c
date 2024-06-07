@@ -2708,10 +2708,7 @@ static int nvme_pci_alloc_iod_mempool(struct nvme_dev *dev)
 {
 	size_t alloc_size = sizeof(struct scatterlist) * NVME_MAX_SEGS;
 
-	dev->iod_mempool = mempool_create_node(1,
-			mempool_kmalloc, mempool_kfree,
-			(void *)alloc_size, GFP_KERNEL,
-			dev_to_node(dev->dev));
+	dev->iod_mempool = mempool_create_kmalloc_pool(1, alloc_size);
 	if (!dev->iod_mempool)
 		return -ENOMEM;
 	return 0;
