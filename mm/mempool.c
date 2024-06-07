@@ -279,6 +279,32 @@ int mempool_init_slab_pool(mempool_t *pool, int min_nr, struct kmem_cache *kc)
 }
 EXPORT_SYMBOL(mempool_init_slab_pool);
 
+static inline int __mempool_init_kmalloc_pool(mempool_t *pool, int min_nr,
+					      size_t size, unsigned long caller)
+{
+	struct kmem_cache_reserve *kcr;
+
+	if (size > KMALLOC_MAX_CACHE_SIZE)
+		return mempool_init_noprof(pool, min_nr, mempool_kmalloc,
+				mempool_kfree, (void *)(unsigned long)size);
+
+	kcr = __kmalloc_reserve_create(size, min_nr, caller);
+	if (!kcr)
+		return -ENOMEM;
+
+	pool->type = MEMPOOL_TYPE_KMEM_RESERVE;
+	pool->pool_data = kcr;
+	pool->elements = ZERO_SIZE_PTR;
+
+	return 0;
+}
+
+int mempool_init_kmalloc_pool(mempool_t *pool, int min_nr, size_t size)
+{
+	return __mempool_init_kmalloc_pool(pool, min_nr, size, _RET_IP_);
+}
+EXPORT_SYMBOL(mempool_init_kmalloc_pool);
+
 /**
  * mempool_create_node - create a memory pool
  * @min_nr:    the minimum number of elements guaranteed to be
@@ -333,6 +359,23 @@ mempool_t *mempool_create_slab_pool(int min_nr, struct kmem_cache *kc)
 	return pool;
 }
 EXPORT_SYMBOL(mempool_create_slab_pool);
+
+mempool_t *mempool_create_kmalloc_pool(int min_nr, size_t size)
+{
+	mempool_t *pool;
+
+	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	if (!pool)
+		return NULL;
+
+	if (__mempool_init_kmalloc_pool(pool, min_nr, size, _RET_IP_)) {
+		kfree(pool);
+		return NULL;
+	}
+
+	return pool;
+}
+EXPORT_SYMBOL(mempool_create_kmalloc_pool);
 
 /**
  * mempool_resize - resize an existing memory pool
@@ -439,7 +482,8 @@ void *mempool_alloc_noprof(mempool_t *pool, gfp_t gfp_mask)
 	gfp_t gfp_temp;
 
 	if (pool->type == MEMPOOL_TYPE_KMEM_RESERVE)
-		return kmem_cache_reserve_alloc_noprof(pool->pool_data, gfp_mask);
+		return kmem_cache_reserve_alloc_noprof(pool->pool_data,
+						gfp_mask & ~__GFP_ACCOUNT);
 
 	VM_WARN_ON_ONCE(gfp_mask & __GFP_ZERO);
 	might_alloc(gfp_mask);
