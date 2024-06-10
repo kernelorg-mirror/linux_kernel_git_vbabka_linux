@@ -20,41 +20,7 @@
 #include <linux/writeback.h>
 #include "slab.h"
 
-#ifdef CONFIG_SLUB_DEBUG_ON
-static void poison_error(mempool_t *pool, void *element, size_t size,
-			 size_t byte)
-{
-	const int nr = pool->curr_nr;
-	const int start = max_t(int, byte - (BITS_PER_LONG / 8), 0);
-	const int end = min_t(int, byte + (BITS_PER_LONG / 8), size);
-	int i;
-
-	pr_err("BUG: mempool element poison mismatch\n");
-	pr_err("Mempool %p size %zu\n", pool, size);
-	pr_err(" nr=%d @ %p: %s0x", nr, element, start > 0 ? "... " : "");
-	for (i = start; i < end; i++)
-		pr_cont("%x ", *(u8 *)(element + i));
-	pr_cont("%s\n", end < size ? "..." : "");
-	dump_stack();
-}
-
-static void __check_element(mempool_t *pool, void *element, size_t size)
-{
-	u8 *obj = element;
-	size_t i;
-
-	for (i = 0; i < size; i++) {
-		u8 exp = (i < size - 1) ? POISON_FREE : POISON_END;
-
-		if (obj[i] != exp) {
-			poison_error(pool, element, size, i);
-			return;
-		}
-	}
-	memset(obj, POISON_INUSE, size);
-}
-
-static void check_element(mempool_t *pool, void *element)
+static void unpoison_element(mempool_t *pool, void *element)
 {
 	/* Skip checking: KASAN might save its metadata in the element. */
 	if (kasan_enabled())
@@ -63,19 +29,13 @@ static void check_element(mempool_t *pool, void *element)
 	if (pool->free == mempool_free_pages) {
 		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
-		void *addr = kmap_local_page((struct page *)element);
+		struct page *page = element;
 
-		__check_element(pool, addr, 1UL << (PAGE_SHIFT + order));
-		kunmap_local(addr);
+		/* Subset of post_alloc_hook() */
+		arch_alloc_page(page, order);
+		debug_pagealloc_map_pages(page, 1 << order);
+		kernel_unpoison_pages(page, 1 << order);
 	}
-}
-
-static void __poison_element(void *element, size_t size)
-{
-	u8 *obj = element;
-
-	memset(obj, POISON_FREE, size - 1);
-	obj[size - 1] = POISON_END;
 }
 
 static void poison_element(mempool_t *pool, void *element)
@@ -87,20 +47,14 @@ static void poison_element(mempool_t *pool, void *element)
 	if (pool->alloc == mempool_alloc_pages) {
 		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
-		void *addr = kmap_local_page((struct page *)element);
+		struct page *page = element;
 
-		__poison_element(addr, 1UL << (PAGE_SHIFT + order));
-		kunmap_local(addr);
+		/* Subset of free_pages_prepare() */
+		kernel_poison_pages(page, 1 << order);
+		arch_free_page(page, order);
+		debug_pagealloc_unmap_pages(page, 1 << order);
 	}
 }
-#else /* CONFIG_SLUB_DEBUG_ON */
-static inline void check_element(mempool_t *pool, void *element)
-{
-}
-static inline void poison_element(mempool_t *pool, void *element)
-{
-}
-#endif /* CONFIG_SLUB_DEBUG_ON */
 
 /*
  * These are now only used internally for large kmalloc allocations
@@ -149,7 +103,7 @@ static void *remove_element(mempool_t *pool)
 
 	BUG_ON(pool->curr_nr < 0);
 	kasan_unpoison_element(pool, element);
-	check_element(pool, element);
+	unpoison_element(pool, element);
 	return element;
 }
 
