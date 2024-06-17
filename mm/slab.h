@@ -279,6 +279,8 @@ struct kmem_cache {
 	unsigned int red_left_pad;	/* Left redzone padding size */
 	const char *name;		/* Name (only for display!) */
 	struct list_head list;		/* List of slab caches */
+	struct work_struct async_destroy_work;
+
 #ifdef CONFIG_SYSFS
 	struct kobject kobj;		/* For sysfs */
 #endif
@@ -478,7 +480,7 @@ static inline bool is_kmalloc_cache(struct kmem_cache *s)
 			      SLAB_NO_USER_FLAGS)
 
 bool __kmem_cache_empty(struct kmem_cache *);
-int __kmem_cache_shutdown(struct kmem_cache *);
+int __kmem_cache_shutdown(struct kmem_cache *, bool);
 void __kmem_cache_release(struct kmem_cache *);
 int __kmem_cache_shrink(struct kmem_cache *);
 void slab_kmem_cache_release(struct kmem_cache *);

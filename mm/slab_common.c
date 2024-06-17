@@ -44,6 +44,8 @@ static LIST_HEAD(slab_caches_to_rcu_destroy);
 static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work);
 static DECLARE_WORK(slab_caches_to_rcu_destroy_work,
 		    slab_caches_to_rcu_destroy_workfn);
+static void kmem_cache_kfree_rcu_destroy_workfn(struct work_struct *work);
+
 
 /*
  * Set of flags that will prevent slab merging
@@ -235,6 +237,7 @@ static struct kmem_cache *create_cache(const char *name,
 
 	s->refcount = 1;
 	list_add(&s->list, &slab_caches);
+	INIT_WORK(&s->async_destroy_work, kmem_cache_kfree_rcu_destroy_workfn);
 	return s;
 
 out_free_cache:
@@ -535,6 +538,47 @@ void slab_kmem_cache_release(struct kmem_cache *s)
 	kmem_cache_free(kmem_cache, s);
 }
 
+static void kmem_cache_kfree_rcu_destroy_workfn(struct work_struct *work)
+{
+	struct kmem_cache *s;
+	bool rcu_set;
+	int err;
+
+	s = container_of(work, struct kmem_cache, async_destroy_work);
+
+	// XXX use the real kmem_cache_free_barrier() or similar thing here
+	rcu_barrier();
+
+	cpus_read_lock();
+	mutex_lock(&slab_mutex);
+
+	rcu_set = s->flags & SLAB_TYPESAFE_BY_RCU;
+
+	/* free asan quarantined objects */
+	kasan_cache_shutdown(s);
+
+	err = __kmem_cache_shutdown(s, true);
+	WARN(err, "kmem_cache_destroy %s: Slab cache still has objects",
+	     s->name);
+
+	if (err)
+		goto out_unlock;
+
+	list_del(&s->list);
+
+	if (rcu_set) {
+		list_add_tail(&s->list, &slab_caches_to_rcu_destroy);
+		schedule_work(&slab_caches_to_rcu_destroy_work);
+	}
+
+out_unlock:
+	mutex_unlock(&slab_mutex);
+	cpus_read_unlock();
+
+	if (!err && !rcu_set)
+		kmem_cache_release(s);
+}
+
 void kmem_cache_destroy(struct kmem_cache *s)
 {
 	bool rcu_set;
@@ -558,9 +602,7 @@ void kmem_cache_destroy(struct kmem_cache *s)
 	/* free asan quarantined objects */
 	kasan_cache_shutdown(s);
 
-	err = __kmem_cache_shutdown(s);
-	WARN(err, "%s %s: Slab cache still has objects when called from %pS",
-	     __func__, s->name, (void *)_RET_IP_);
+	err = __kmem_cache_shutdown(s, false);
 
 	if (!err)
 		list_del(&s->list);
@@ -573,8 +615,10 @@ void kmem_cache_destroy(struct kmem_cache *s)
 	}
 	debugfs_slab_release(s);
 
-	if (err)
+	if (err) {
+		schedule_work(&s->async_destroy_work);
 		return;
+	}
 
 	if (rcu_set) {
 		mutex_lock(&slab_mutex);
