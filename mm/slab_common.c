@@ -150,9 +150,11 @@ int slab_unmergeable(struct kmem_cache *s)
 #endif
 
 	/*
-	 * We may have set a slab to be unmergeable during bootstrap.
+	 * We may have set a cache to be unmergeable (-1) during bootstrap.
+	 * 0 is for cache being destroyed asynchronously, or cache that failed
+	 * to destroy due to outstanding objects.
 	 */
-	if (s->refcount < 0)
+	if (s->refcount <= 0)
 		return 1;
 
 	return 0;
