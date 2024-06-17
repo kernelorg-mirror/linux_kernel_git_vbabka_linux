@@ -5361,7 +5361,8 @@ static void list_slab_objects(struct kmem_cache *s, struct slab *slab,
  * This is called from __kmem_cache_shutdown(). We must take list_lock
  * because sysfs file might still access partial list after the shutdowning.
  */
-static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
+static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n,
+			 bool warn_inuse)
 {
 	LIST_HEAD(discard);
 	struct slab *slab, *h;
@@ -5372,7 +5373,7 @@ static void free_partial(struct kmem_cache *s, struct kmem_cache_node *n)
 		if (!slab->inuse) {
 			remove_partial(n, slab);
 			list_add(&slab->slab_list, &discard);
-		} else {
+		} else if (warn_inuse) {
 			list_slab_objects(s, slab,
 			  "Objects remaining in %s on __kmem_cache_shutdown()");
 		}
@@ -5397,7 +5398,7 @@ bool __kmem_cache_empty(struct kmem_cache *s)
 /*
  * Release all resources used by a slab cache.
  */
-int __kmem_cache_shutdown(struct kmem_cache *s)
+int __kmem_cache_shutdown(struct kmem_cache *s, bool warn_inuse)
 {
 	int node;
 	struct kmem_cache_node *n;
@@ -5405,7 +5406,7 @@ int __kmem_cache_shutdown(struct kmem_cache *s)
 	flush_all_cpus_locked(s);
 	/* Attempt to free all objects */
 	for_each_kmem_cache_node(s, node, n) {
-		free_partial(s, n);
+		free_partial(s, n, warn_inuse);
 		if (n->nr_partial || node_nr_slabs(n))
 			return 1;
 	}
