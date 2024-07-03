@@ -6907,8 +6907,11 @@ int kmem_cache_setup_percpu_sheaves(struct kmem_cache *s, unsigned int capacity,
 	if (WARN_ON_ONCE(!(s->flags & SLAB_NO_MERGE)))
 		return -EINVAL;
 
-	if (s->cpu_sheaves)
+	if (s->cpu_sheaves) {
+		if (rcu_dtor)
+			s->rcu_dtor = rcu_dtor;
 		return -EINVAL;
+	}
 
 	// TODO: increase capacity to grow slab_sheaf up to next kmalloc size?
 
