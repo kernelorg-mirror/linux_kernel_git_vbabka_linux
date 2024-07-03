@@ -294,6 +294,8 @@ kmem_cache_create_usercopy(const char *name,
 		stack_depot_init();
 #endif
 
+	flags |= SLAB_NO_MERGE;
+
 	mutex_lock(&slab_mutex);
 
 	err = kmem_cache_sanity_check(name, size);
@@ -354,6 +356,9 @@ out_unlock:
 		}
 		return NULL;
 	}
+
+	kmem_cache_setup_percpu_sheaves(s, 8, NULL);
+
 	return s;
 }
 EXPORT_SYMBOL(kmem_cache_create_usercopy);
