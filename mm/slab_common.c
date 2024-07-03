@@ -306,6 +306,9 @@ struct kmem_cache *__kmem_cache_create_args(const char *name,
 		stack_depot_init();
 #endif
 
+	if (!args->sheaf_capacity)
+		args->sheaf_capacity = 8;
+
 	mutex_lock(&slab_mutex);
 
 	err = kmem_cache_sanity_check(name, object_size);
