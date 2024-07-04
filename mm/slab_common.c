@@ -235,6 +235,9 @@ static struct kmem_cache *create_cache(const char *name,
 	     !IS_ALIGNED(args->freeptr_offset, __alignof__(freeptr_t))))
 		goto out;
 
+	if (args->sheaf_rcu_dtor && !args->sheaf_capacity)
+		goto out;
+
 	err = -ENOMEM;
 	s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 	if (!s)
@@ -1558,7 +1561,7 @@ kvfree_rcu_list(struct rcu_head *head)
 		rcu_lock_acquire(&rcu_callback_map);
 		trace_rcu_invoke_kvfree_callback("slab", head, offset);
 
-		kvfree(ptr);
+		__kvfree_rcu(ptr);
 
 		rcu_lock_release(&rcu_callback_map);
 		cond_resched_tasks_rcu_qs();
@@ -1611,6 +1614,24 @@ static void kfree_rcu_work(struct work_struct *work)
 	 */
 	if (head && !WARN_ON_ONCE(!poll_state_synchronize_rcu_full(&head_gp_snap)))
 		kvfree_rcu_list(head);
+}
+
+static bool kfree_rcu_sheaf(void *obj)
+{
+	struct kmem_cache *s;
+	struct folio *folio;
+	struct slab *slab;
+
+	folio = virt_to_folio(obj);
+	if (unlikely(!folio_test_slab(folio)))
+		return false;
+
+	slab = folio_slab(folio);
+	s = slab->slab_cache;
+	if (s->cpu_sheaves)
+		return __kfree_rcu_sheaf(s, obj);
+
+	return false;
 }
 
 static bool
@@ -1957,6 +1978,9 @@ void kvfree_call_rcu(struct rcu_head *head, void *ptr)
 	if (!head)
 		might_sleep();
 
+	if (kfree_rcu_sheaf(ptr))
+		return;
+
 	// Queue the object but don't yet schedule the batch.
 	if (debug_rcu_head_queue(ptr)) {
 		// Probable double kfree_rcu(), just leak.
@@ -2009,7 +2033,7 @@ unlock_return:
 	if (!success) {
 		debug_rcu_head_unqueue((struct rcu_head *) ptr);
 		synchronize_rcu();
-		kvfree(ptr);
+		__kvfree_rcu(ptr);
 	}
 }
 EXPORT_SYMBOL_GPL(kvfree_call_rcu);
