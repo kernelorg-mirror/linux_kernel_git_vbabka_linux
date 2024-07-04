@@ -351,6 +351,8 @@ enum stat_item {
 	ALLOC_FASTPATH,		/* Allocation from cpu slab */
 	ALLOC_SLOWPATH,		/* Allocation by getting a new cpu slab */
 	FREE_PCS,		/* Free to percpu sheaf */
+	FREE_RCU_SHEAF,		/* Free to rcu_free sheaf */
+	FREE_RCU_SHEAF_FAIL,	/* Failed to free to a rcu_free sheaf */
 	FREE_FASTPATH,		/* Free to cpu slab */
 	FREE_SLOWPATH,		/* Freeing not to cpu slab */
 	FREE_FROZEN,		/* Freeing to frozen slab */
@@ -2421,6 +2423,24 @@ static void sheaf_flush(struct kmem_cache *s, struct slab_sheaf *sheaf)
 	sheaf->size = 0;
 }
 
+static void __rcu_free_sheaf_prepare(struct kmem_cache *s,
+				     struct slab_sheaf *sheaf);
+
+static void rcu_free_sheaf_nobarn(struct rcu_head *head)
+{
+	struct slab_sheaf *sheaf;
+	struct kmem_cache *s;
+
+	sheaf = container_of(head, struct slab_sheaf, rcu_head);
+	s = sheaf->cache;
+
+	__rcu_free_sheaf_prepare(s, sheaf);
+
+	sheaf_flush(s, sheaf);
+
+	free_empty_sheaf(s, sheaf);
+}
+
 /*
  * Caller needs to make sure migration is disabled in order to fully flush
  * single cpu's sheaves
@@ -2450,8 +2470,8 @@ static void pcs_flush_all(struct kmem_cache *s)
 		free_empty_sheaf(s, spare);
 	}
 
-	// TODO: handle rcu_free
-	BUG_ON(rcu_free);
+	if (rcu_free)
+		call_rcu(&rcu_free->rcu_head, rcu_free_sheaf_nobarn);
 
 	sheaf_flush_main(s);
 }
@@ -5012,6 +5032,122 @@ do_free:
 	stat(s, FREE_PCS);
 }
 
+static void __rcu_free_sheaf_prepare(struct kmem_cache *s,
+				     struct slab_sheaf *sheaf)
+{
+	bool init = slab_want_init_on_free(s);
+	void **p = &sheaf->objects[0];
+	unsigned int i = 0;
+
+	while (i < sheaf->size) {
+		struct slab *slab = virt_to_slab(p[i]);
+
+		if (s->rcu_dtor)
+			s->rcu_dtor(p[i]);
+
+		memcg_slab_free_hook(s, slab, p + i, 1);
+		alloc_tagging_slab_free_hook(s, slab, p + i, 1);
+
+		if (unlikely(!slab_free_hook(s, p[i], init))) {
+			p[i] = p[--sheaf->size];
+			continue;
+		}
+
+		i++;
+	}
+}
+
+static void rcu_free_sheaf(struct rcu_head *head)
+{
+	struct slab_sheaf *sheaf;
+	struct node_barn *barn;
+	struct kmem_cache *s;
+
+	sheaf = container_of(head, struct slab_sheaf, rcu_head);
+
+	s = sheaf->cache;
+
+	__rcu_free_sheaf_prepare(s, sheaf);
+
+	barn = get_node(s, numa_mem_id())->barn;
+
+	/* due to slab_free_hook() */
+	if (unlikely(sheaf->size == 0))
+		goto empty;
+
+	if (!barn_put_full_sheaf(barn, sheaf, false))
+		return;
+
+	sheaf_flush(s, sheaf);
+
+empty:
+	if (!barn_put_empty_sheaf(barn, sheaf, false))
+		return;
+
+	free_empty_sheaf(s, sheaf);
+}
+
+bool __kfree_rcu_sheaf(struct kmem_cache *s, void *obj)
+{
+	struct slub_percpu_sheaves *pcs;
+	struct slab_sheaf *rcu_sheaf;
+	unsigned long flags;
+
+	local_lock_irqsave(&s->cpu_sheaves->lock, flags);
+	pcs = this_cpu_ptr(s->cpu_sheaves);
+
+	if (unlikely(!pcs->rcu_free)) {
+
+		struct slab_sheaf *empty;
+
+		empty = barn_get_empty_sheaf(pcs->barn);
+
+		if (empty) {
+			pcs->rcu_free = empty;
+			goto do_free;
+		}
+
+		local_unlock_irqrestore(&s->cpu_sheaves->lock, flags);
+
+		empty = alloc_empty_sheaf(s, GFP_NOWAIT);
+
+		if (!empty) {
+			stat(s, FREE_RCU_SHEAF_FAIL);
+			return false;
+		}
+
+		local_lock_irqsave(&s->cpu_sheaves->lock, flags);
+		pcs = this_cpu_ptr(s->cpu_sheaves);
+
+		if (unlikely(pcs->rcu_free)) {
+			barn_put_empty_sheaf(pcs->barn, empty, true);
+		} else {
+			pcs->rcu_free = empty;
+		}
+	}
+
+do_free:
+
+	rcu_sheaf = pcs->rcu_free;
+
+	rcu_sheaf->objects[rcu_sheaf->size++] = obj;
+
+	if (likely(rcu_sheaf->size < s->sheaf_capacity)) {
+		local_unlock_irqrestore(&s->cpu_sheaves->lock, flags);
+		stat(s, FREE_RCU_SHEAF);
+		return true;
+	}
+
+	pcs->rcu_free = NULL;
+	local_unlock_irqrestore(&s->cpu_sheaves->lock, flags);
+
+	call_rcu(&rcu_sheaf->rcu_head, rcu_free_sheaf);
+
+	stat(s, FREE_RCU_SHEAF);
+
+	return true;
+}
+
 /*
  * Bulk free objects to the percpu sheaves.
  * Unlike free_to_pcs() this includes the calls to all necessary hooks
@@ -5288,6 +5424,32 @@ static void free_large_kmalloc(struct folio *folio, void *object)
 	lruvec_stat_mod_folio(folio, NR_SLAB_UNRECLAIMABLE_B,
 			      -(PAGE_SIZE << order));
 	folio_put(folio);
+}
+
+void __kvfree_rcu(void *obj)
+{
+	struct folio *folio;
+	struct slab *slab;
+	struct kmem_cache *s;
+
+	if (is_vmalloc_addr(obj)) {
+		vfree(obj);
+		return;
+	}
+
+	folio = virt_to_folio(obj);
+	if (unlikely(!folio_test_slab(folio))) {
+		free_large_kmalloc(folio, obj);
+		return;
+	}
+
+	slab = folio_slab(folio);
+	s = slab->slab_cache;
+
+	if (s->rcu_dtor)
+		s->rcu_dtor(obj);
+
+	slab_free(s, slab, obj, _RET_IP_);
 }
 
 /**
@@ -6166,6 +6328,11 @@ int __kmem_cache_shutdown(struct kmem_cache *s)
 	struct kmem_cache_node *n;
 
 	flush_all_cpus_locked(s);
+
+	// TODO: some rcu_free sheaves might be in flight, can we
+	// synchronize_rcu() here or not because of cpu hotplug and slab_mutex
+	// locked?
+
 	/* Attempt to free all objects */
 	for_each_kmem_cache_node(s, node, n) {
 		if (n->barn)
@@ -6699,6 +6866,7 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
  * kmem_cache_setup_percpu_sheaves - Create percpu sheaves for the cache.
  * @s: The cache to add sheaves to. Must be created with SLAB_NO_MERGE flag.
  * @capacity: Object capacity of each sheaf.
+ * @rcu_dtor: Optional function to be called after kfree_rcu() grace period.
  *
  * After this call, allocations from the cache go through caching arrays called
  * sheaves. Each cpu has a main sheaf that's always present, and a spare sheaf
@@ -6730,7 +6898,8 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
  * Return: 0 if OK, -EINVAL on caches without SLAB_NO_MERGE or with the sheaves
  * already created, -ENOMEM when the per-cpu sheaves creation fails.
  */
-int kmem_cache_setup_percpu_sheaves(struct kmem_cache *s, unsigned int capacity)
+int kmem_cache_setup_percpu_sheaves(struct kmem_cache *s, unsigned int capacity,
+				    void (*rcu_dtor)(void *))
 {
 	int nid, cpu;
 	struct kmem_cache_node *n;
@@ -6784,6 +6953,8 @@ int kmem_cache_setup_percpu_sheaves(struct kmem_cache *s, unsigned int capacity)
 		if (!pcs->main)
 			goto undo_main_sheaves;
 	}
+
+	s->rcu_dtor = rcu_dtor;
 
 	return 0;
 
@@ -7594,6 +7765,8 @@ STAT_ATTR(ALLOC_PCS, alloc_cpu_sheaf);
 STAT_ATTR(ALLOC_FASTPATH, alloc_fastpath);
 STAT_ATTR(ALLOC_SLOWPATH, alloc_slowpath);
 STAT_ATTR(FREE_PCS, free_cpu_sheaf);
+STAT_ATTR(FREE_RCU_SHEAF, free_rcu_sheaf);
+STAT_ATTR(FREE_RCU_SHEAF_FAIL, free_rcu_sheaf_fail);
 STAT_ATTR(FREE_FASTPATH, free_fastpath);
 STAT_ATTR(FREE_SLOWPATH, free_slowpath);
 STAT_ATTR(FREE_FROZEN, free_frozen);
@@ -7689,6 +7862,8 @@ static struct attribute *slab_attrs[] = {
 	&alloc_fastpath_attr.attr,
 	&alloc_slowpath_attr.attr,
 	&free_cpu_sheaf_attr.attr,
+	&free_rcu_sheaf_attr.attr,
+	&free_rcu_sheaf_fail_attr.attr,
 	&free_fastpath_attr.attr,
 	&free_slowpath_attr.attr,
 	&free_frozen_attr.attr,

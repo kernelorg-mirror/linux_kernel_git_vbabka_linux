@@ -65,6 +65,7 @@
 #include <linux/kasan.h>
 #include <linux/context_tracking.h>
 #include "../time/tick-internal.h"
+#include "../../mm/slab.h"
 
 #include "tree.h"
 #include "rcu.h"
@@ -3406,7 +3407,7 @@ kvfree_rcu_list(struct rcu_head *head)
 		trace_rcu_invoke_kvfree_callback(rcu_state.name, head, offset);
 
 		if (!WARN_ON_ONCE(!__is_kvfree_rcu_offset(offset)))
-			kvfree(ptr);
+			__kvfree_rcu(ptr);
 
 		rcu_lock_release(&rcu_callback_map);
 		cond_resched_tasks_rcu_qs();
@@ -3778,6 +3779,9 @@ void kvfree_call_rcu(struct rcu_head *head, void *ptr)
 		return;
 	}
 
+	if (kfree_rcu_sheaf(ptr))
+		return;
+
 	kasan_record_aux_stack_noalloc(ptr);
 	success = add_ptr_to_bulk_krc_lock(&krcp, &flags, ptr, !head);
 	if (!success) {
@@ -3820,7 +3824,7 @@ unlock_return:
 	if (!success) {
 		debug_rcu_head_unqueue((struct rcu_head *) ptr);
 		synchronize_rcu();
-		kvfree(ptr);
+		__kvfree_rcu(ptr);
 	}
 }
 EXPORT_SYMBOL_GPL(kvfree_call_rcu);
