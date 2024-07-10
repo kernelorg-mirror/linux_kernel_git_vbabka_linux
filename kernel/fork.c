@@ -511,21 +511,23 @@ void __vm_area_free(struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_PER_VMA_LOCK
-static void vm_area_free_rcu_cb(struct rcu_head *head)
+static void __vma_area_rcu_free_dtor(void *ptr)
 {
-	struct vm_area_struct *vma = container_of(head, struct vm_area_struct,
-						  vm_rcu);
+	struct vm_area_struct *vma = ptr;
 
 	/* The vma should not be locked while being destroyed. */
 	VM_BUG_ON_VMA(rwsem_is_locked(&vma->vm_lock->lock), vma);
-	__vm_area_free(vma);
+
+	vma_numab_state_free(vma);
+	free_anon_vma_name(vma);
+	vma_lock_free(vma);
 }
 #endif
 
 void vm_area_free(struct vm_area_struct *vma)
 {
 #ifdef CONFIG_PER_VMA_LOCK
-	call_rcu(&vma->vm_rcu, vm_area_free_rcu_cb);
+	kfree_rcu(vma, vm_rcu);
 #else
 	__vm_area_free(vma);
 #endif
@@ -3181,8 +3183,13 @@ void __init proc_caches_init(void)
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT,
 			NULL);
 
-	vm_area_cachep = KMEM_CACHE(vm_area_struct, SLAB_PANIC|SLAB_ACCOUNT);
+	vm_area_cachep = KMEM_CACHE(vm_area_struct,
+				    SLAB_PANIC|SLAB_ACCOUNT|SLAB_NO_MERGE);
+
 #ifdef CONFIG_PER_VMA_LOCK
+	kmem_cache_setup_percpu_sheaves(vm_area_cachep, 32,
+					__vma_area_rcu_free_dtor);
+
 	vma_lock_cachep = KMEM_CACHE(vma_lock, SLAB_PANIC|SLAB_ACCOUNT);
 #endif
 	mmap_init();
