@@ -490,14 +490,10 @@ EXPORT_SYMBOL(kmem_buckets_create);
  * once or there will be a use-after-free problem. The actual deletion
  * and release of the kobject does not need slab_mutex or cpu_hotplug_lock
  * protection. So they are now done without holding those locks.
- *
- * Note that there will be a slight delay in the deletion of sysfs files
- * if kmem_cache_release() is called indrectly from a work function.
  */
 static void kmem_cache_release(struct kmem_cache *s)
 {
 	if (slab_state >= FULL) {
-		sysfs_slab_unlink(s);
 		sysfs_slab_release(s);
 	} else {
 		slab_kmem_cache_release(s);
@@ -534,31 +530,9 @@ static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work)
 	rcu_barrier();
 
 	list_for_each_entry_safe(s, s2, &to_destroy, list) {
-		debugfs_slab_release(s);
 		kfence_shutdown_cache(s);
 		kmem_cache_release(s);
 	}
-}
-
-static int shutdown_cache(struct kmem_cache *s)
-{
-	/* free asan quarantined objects */
-	kasan_cache_shutdown(s);
-
-	if (__kmem_cache_shutdown(s) != 0)
-		return -EBUSY;
-
-	list_del(&s->list);
-
-	if (s->flags & SLAB_TYPESAFE_BY_RCU) {
-		list_add_tail(&s->list, &slab_caches_to_rcu_destroy);
-		schedule_work(&slab_caches_to_rcu_destroy_work);
-	} else {
-		kfence_shutdown_cache(s);
-		debugfs_slab_release(s);
-	}
-
-	return 0;
 }
 
 void slab_kmem_cache_release(struct kmem_cache *s)
@@ -570,8 +544,8 @@ void slab_kmem_cache_release(struct kmem_cache *s)
 
 void kmem_cache_destroy(struct kmem_cache *s)
 {
-	int err = -EBUSY;
 	bool rcu_set;
+	int err;
 
 	if (unlikely(!s) || !kasan_check_byte(s))
 		return;
@@ -579,20 +553,46 @@ void kmem_cache_destroy(struct kmem_cache *s)
 	cpus_read_lock();
 	mutex_lock(&slab_mutex);
 
+	s->refcount--;
+	if (s->refcount) {
+		mutex_unlock(&slab_mutex);
+		cpus_read_unlock();
+		return;
+	}
+
 	rcu_set = s->flags & SLAB_TYPESAFE_BY_RCU;
 
-	s->refcount--;
-	if (s->refcount)
-		goto out_unlock;
+	/* free asan quarantined objects */
+	kasan_cache_shutdown(s);
 
-	err = shutdown_cache(s);
+	err = __kmem_cache_shutdown(s);
 	WARN(err, "%s %s: Slab cache still has objects when called from %pS",
 	     __func__, s->name, (void *)_RET_IP_);
-out_unlock:
+
+	if (!err) {
+		list_del(&s->list);
+		kfence_shutdown_cache(s);
+	}
+
 	mutex_unlock(&slab_mutex);
 	cpus_read_unlock();
-	if (!err && !rcu_set)
+
+	if (slab_state >= FULL) {
+		sysfs_slab_unlink(s);
+	}
+	debugfs_slab_release(s);
+
+	if (err)
+		return;
+
+	if (rcu_set) {
+		mutex_lock(&slab_mutex);
+		list_add_tail(&s->list, &slab_caches_to_rcu_destroy);
+		schedule_work(&slab_caches_to_rcu_destroy_work);
+		mutex_unlock(&slab_mutex);
+	} else {
 		kmem_cache_release(s);
+	}
 }
 EXPORT_SYMBOL(kmem_cache_destroy);
 
