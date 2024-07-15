@@ -484,7 +484,6 @@ fail:
 }
 EXPORT_SYMBOL(kmem_buckets_create);
 
-#ifdef SLAB_SUPPORTS_SYSFS
 /*
  * For a given kmem_cache, kmem_cache_destroy() should only be called
  * once or there will be a use-after-free problem. The actual deletion
@@ -493,18 +492,12 @@ EXPORT_SYMBOL(kmem_buckets_create);
  */
 static void kmem_cache_release(struct kmem_cache *s)
 {
-	if (slab_state >= FULL) {
+	kfence_shutdown_cache(s);
+	if (__is_defined(SLAB_SUPPORTS_SYSFS) && slab_state >= FULL)
 		sysfs_slab_release(s);
-	} else {
+	else
 		slab_kmem_cache_release(s);
-	}
 }
-#else
-static void kmem_cache_release(struct kmem_cache *s)
-{
-	slab_kmem_cache_release(s);
-}
-#endif
 
 static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work)
 {
@@ -529,10 +522,8 @@ static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work)
 
 	rcu_barrier();
 
-	list_for_each_entry_safe(s, s2, &to_destroy, list) {
-		kfence_shutdown_cache(s);
+	list_for_each_entry_safe(s, s2, &to_destroy, list)
 		kmem_cache_release(s);
-	}
 }
 
 void slab_kmem_cache_release(struct kmem_cache *s)
@@ -569,10 +560,8 @@ void kmem_cache_destroy(struct kmem_cache *s)
 	WARN(err, "%s %s: Slab cache still has objects when called from %pS",
 	     __func__, s->name, (void *)_RET_IP_);
 
-	if (!err) {
+	if (!err)
 		list_del(&s->list);
-		kfence_shutdown_cache(s);
-	}
 
 	mutex_unlock(&slab_mutex);
 	cpus_read_unlock();
