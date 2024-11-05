@@ -1155,6 +1155,13 @@ static inline struct maple_node *mas_pop_node(struct ma_state *mas)
 	unsigned long total = mas_allocated(mas);
 	unsigned int req = mas_alloc_req(mas);
 
+	if (mas->sheaf) {
+		ret = kmem_cache_alloc_from_sheaf(maple_node_cache, GFP_NOWAIT,
+				mas->sheaf);
+		BUG_ON(!ret);
+		goto single_node;
+	}
+
 	/* nothing or a request pending. */
 	if (WARN_ON(!total))
 		return NULL;
@@ -5502,6 +5509,16 @@ int mas_preallocate(struct ma_state *mas, void *entry, gfp_t gfp)
 	if (!request)
 		return ret;
 
+	if (mas->sheaf)
+		kmem_cache_return_sheaf(maple_node_cache, gfp, mas->sheaf);
+
+	mas->sheaf = kmem_cache_prefill_sheaf(maple_node_cache, gfp,
+							request);
+	if (!mas->sheaf)
+		return -ENOMEM;
+
+	return 0;
+
 	mas_node_count_gfp(mas, request, gfp);
 	if (mas_is_err(mas)) {
 		mas_set_alloc_req(mas, 0);
@@ -5548,6 +5565,11 @@ void mas_destroy(struct ma_state *mas)
 		mas->mas_flags &= ~MA_STATE_REBALANCE;
 	}
 	mas->mas_flags &= ~(MA_STATE_BULK|MA_STATE_PREALLOC);
+
+	if (mas->sheaf) {
+		kmem_cache_return_sheaf(maple_node_cache, GFP_NOWAIT, mas->sheaf);
+		mas->sheaf = NULL;
+	}
 
 	total = mas_allocated(mas);
 	while (total) {
