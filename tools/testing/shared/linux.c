@@ -181,6 +181,12 @@ int kmem_cache_alloc_bulk(struct kmem_cache *cachep, gfp_t gfp, size_t size,
 	if (kmalloc_verbose)
 		pr_debug("Bulk alloc %lu\n", size);
 
+	if (cachep->exec_callback) {
+		if (cachep->callback)
+			cachep->callback(cachep->private);
+		cachep->exec_callback = false;
+	}
+
 	pthread_mutex_lock(&cachep->lock);
 	if (cachep->nr_objs >= size) {
 		struct radix_tree_node *node;
@@ -268,6 +274,77 @@ __kmem_cache_create_args(const char *name, unsigned int size,
 		kmem_active = ret;
 
 	return ret;
+}
+
+struct slab_sheaf *
+kmem_cache_prefill_sheaf(struct kmem_cache *s, gfp_t gfp, unsigned int count)
+{
+	struct slab_sheaf *sheaf;
+	size_t size;
+	bool oversized = false;
+
+	if (count > s->sheaf_capacity) {
+		size = sizeof(*sheaf) + sizeof(void *) * count;
+		oversized = true;
+	} else {
+		size = sizeof(*sheaf) + sizeof(void *) * s->sheaf_capacity;
+	}
+
+	sheaf = malloc(size);
+	if (!sheaf) {
+		return NULL;
+	}
+
+	memset(sheaf, 0, size);
+	sheaf->cache = s;
+	sheaf->oversized = oversized;
+	sheaf->size = kmem_cache_alloc_bulk(s, gfp, count, sheaf->objects);
+	if (!sheaf->size) {
+		free(sheaf);
+		return NULL;
+	}
+
+	return sheaf;
+}
+
+int kmem_cache_refill_sheaf(struct kmem_cache *s, gfp_t gfp,
+		 struct slab_sheaf *sheaf)
+{
+	unsigned char refill;
+
+	refill = s->sheaf_capacity - sheaf->size;
+	if (!refill)
+		return 0;
+
+	refill = kmem_cache_alloc_bulk(s, gfp, refill,
+				       &sheaf->objects[sheaf->size]);
+	if (!refill)
+		return -ENOMEM;
+
+	sheaf->size += refill;
+	return 0;
+}
+
+void kmem_cache_return_sheaf(struct kmem_cache *s, gfp_t gfp,
+		 struct slab_sheaf *sheaf)
+{
+	if (sheaf->size) {
+		//s->non_kernel += sheaf->size;
+		kmem_cache_free_bulk(s, sheaf->size, &sheaf->objects[0]);
+	}
+	free(sheaf);
+}
+
+void *
+kmem_cache_alloc_from_sheaf(struct kmem_cache *s, gfp_t gfp,
+		struct slab_sheaf *sheaf)
+{
+	if (sheaf->size == 0) {
+		printf("Nothing left in sheaf!\n");
+		return NULL;
+	}
+
+	return sheaf->objects[--sheaf->size];
 }
 
 /*
