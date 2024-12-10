@@ -5018,10 +5018,17 @@ void kmem_cache_return_sheaf(struct kmem_cache *s, gfp_t gfp,
 			     struct slab_sheaf *sheaf)
 {
 	struct slub_percpu_sheaves *pcs;
-	bool refill = false;
+	bool keep = false;
 	struct node_barn *barn;
 
 	//TODO: handle oversize sheaf
+
+	/* Assume it will be kept */
+	if (!sheaf->size && refill_sheaf(s, sheaf, gfp)) {
+		sheaf_flush(s, sheaf);
+		free_empty_sheaf(s, sheaf);
+		return;
+	}
 
 	pcs = cpu_sheaves_lock(s->cpu_sheaves);
 
@@ -5031,7 +5038,7 @@ void kmem_cache_return_sheaf(struct kmem_cache *s, gfp_t gfp,
 	} else if (pcs->barn->nr_full >= MAX_FULL_SHEAVES) {
 		/* racy check */
 		barn = pcs->barn;
-		refill = true;
+		keep = true;
 	}
 
 	cpu_sheaves_unlock(s->cpu_sheaves);
@@ -5039,11 +5046,8 @@ void kmem_cache_return_sheaf(struct kmem_cache *s, gfp_t gfp,
 	if (!sheaf)
 		return;
 
-	/*
-	 * if the barn is full of full sheaves or we fail to refill the sheaf,
-	 * simply flush and free it
-	 */
-	if (!refill || refill_sheaf(s, sheaf, gfp)) {
+	/* if the barn is full, simply flush and free it */
+	if (!keep) {
 		sheaf_flush(s, sheaf);
 		free_empty_sheaf(s, sheaf);
 		return;
