@@ -198,6 +198,22 @@ static void mt_free_rcu(struct rcu_head *head)
 	kmem_cache_free(maple_node_cache, node);
 }
 
+static void mt_return_sheaf(struct slab_sheaf *sheaf)
+{
+	kmem_cache_return_sheaf(maple_node_cache, GFP_KERNEL, sheaf);
+}
+
+static struct slab_sheaf *mt_get_sheaf(gfp_t gfp, int count)
+{
+	return kmem_cache_prefill_sheaf(maple_node_cache, gfp, count);
+}
+
+static int mt_refill_sheaf(gfp_t gfp, struct slab_sheaf **sheafp,
+			   unsigned int count)
+{
+	return kmem_cache_refill_sheaf(maple_node_cache, gfp, sheafp, count);
+}
+
 /*
  * ma_free_rcu() - Use rcu callback to free a maple node
  * @node: The node to free
@@ -1140,25 +1156,14 @@ use_sheaf:
 	}
 
 	if (mas->sheaf) {
-		unsigned long refill;
-
-		refill = mas->node_request;
-		if(kmem_cache_sheaf_size(mas->sheaf) >= refill) {
-			mas->node_request = 0;
-			return;
-		}
-
-		if (kmem_cache_refill_sheaf(maple_node_cache, gfp, &mas->sheaf,
-									refill))
+		if (mt_refill_sheaf(gfp, &mas->sheaf, mas->node_request))
 			goto error;
 
 		mas->node_request = 0;
 		return;
 	}
 
-	mas->sheaf = kmem_cache_prefill_sheaf(maple_node_cache, gfp,
-					      mas->node_request);
-
+	mas->sheaf = mt_get_sheaf(gfp, mas->node_request);
 	if (likely(mas->sheaf)) {
 		mas->node_request = 0;
 		return;
@@ -1172,8 +1177,7 @@ static inline void mas_empty_nodes(struct ma_state *mas)
 {
 	mas->node_request = 0;
 	if (mas->sheaf) {
-		kmem_cache_return_sheaf(maple_node_cache, GFP_KERNEL,
-					mas->sheaf);
+		mt_return_sheaf(mas->sheaf);
 		mas->sheaf = NULL;
 	}
 
