@@ -6087,7 +6087,7 @@ void __init maple_tree_init(void)
 {
 	struct kmem_cache_args args = {
 		.align  = sizeof(struct maple_node),
-		.sheaf_capacity = 32,
+		.sheaf_capacity = 2,
 	};
 
 	maple_node_cache = kmem_cache_create("maple_node",
