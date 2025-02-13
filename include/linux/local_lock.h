@@ -78,13 +78,24 @@
 	__localtry_lock_irqsave(lock, flags)
 
 /**
+ * localtry_trylock - Try to acquire a per CPU local lock.
+ * @lock:	The lock variable
+ *
+ * The function can be used in any context such as NMI or HARDIRQ. Due to
+ * locking constrains it will _always_ fail to acquire the lock in NMI or
+ * HARDIRQ context on PREEMPT_RT.
+ */
+#define localtry_trylock(lock)		__localtry_trylock(lock)
+
+/**
  * localtry_trylock_irqsave - Try to acquire a per CPU local lock, save and disable
  *			      interrupts if acquired
  * @lock:	The lock variable
  * @flags:	Storage for interrupt flags
  *
  * The function can be used in any context such as NMI or HARDIRQ. Due to
- * locking constrains it will _always_ fail to acquire the lock on PREEMPT_RT.
+ * locking constrains it will _always_ fail to acquire the lock in NMI or
+ * HARDIRQ context on PREEMPT_RT.
  */
 #define localtry_trylock_irqsave(lock, flags)				\
 	__localtry_trylock_irqsave(lock, flags)

@@ -137,7 +137,7 @@ do {								\
 #define __localtry_lock_init(lock)				\
 do {								\
 	__local_lock_init(&(lock)->llock);			\
-	WRITE_ONCE(&(lock)->acquired, 0);			\
+	WRITE_ONCE((lock)->acquired, 0);			\
 } while (0)
 
 #define __localtry_lock(lock)					\
@@ -166,6 +166,24 @@ do {								\
 		local_lock_acquire(&lt->llock);			\
 		WRITE_ONCE(lt->acquired, 1);			\
 	} while (0)
+
+#define __localtry_trylock(lock)				\
+	({							\
+		localtry_lock_t *lt;				\
+		bool _ret;					\
+								\
+		preempt_disable();				\
+		lt = this_cpu_ptr(lock);			\
+		if (!READ_ONCE(lt->acquired)) {			\
+			WRITE_ONCE(lt->acquired, 1);		\
+			local_trylock_acquire(&lt->llock);	\
+			_ret = true;				\
+		} else {					\
+			_ret = false;				\
+			preempt_enable();			\
+		}						\
+		_ret;						\
+	})
 
 #define __localtry_trylock_irqsave(lock, flags)			\
 	({							\
@@ -275,12 +293,10 @@ do {								\
 #define __localtry_unlock_irq(lock)			__local_unlock(lock)
 #define __localtry_unlock_irqrestore(lock, flags)	__local_unlock_irqrestore(lock, flags)
 
-#define __localtry_trylock_irqsave(lock, flags)			\
+#define __localtry_trylock(lock)				\
 	({							\
 		int __locked;					\
 								\
-		typecheck(unsigned long, flags);		\
-		flags = 0;					\
 		if (in_nmi() | in_hardirq()) {			\
 			__locked = 0;				\
 		} else {					\
@@ -290,6 +306,13 @@ do {								\
 				migrate_enable();		\
 		}						\
 		__locked;					\
+	})
+
+#define __localtry_trylock_irqsave(lock, flags)			\
+	({							\
+		typecheck(unsigned long, flags);		\
+		flags = 0;					\
+		__localtry_trylock(lock);			\
 	})
 
 #endif /* CONFIG_PREEMPT_RT */
