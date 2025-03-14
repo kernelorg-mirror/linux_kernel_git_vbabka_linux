@@ -7,6 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/rcupdate.h>
 #include "../mm/slab.h"
+#include <asm/tsc.h>
 
 static struct kunit_resource resource;
 static int slab_errors;
@@ -24,6 +25,39 @@ static struct kmem_cache *test_kmem_cache_create(const char *name,
 					(flags | SLAB_NO_USER_FLAGS), NULL);
 	s->flags |= SLAB_SKIP_KFENCE;
 	return s;
+}
+
+#define BENCH_ITERATIONS 10000000
+
+static void test_bench(struct kunit *test)
+{
+	unsigned long long before, after;
+
+	for (unsigned j = 0; j < 10; j++) {
+
+	before = rdtsc_ordered();
+
+	for (unsigned long i = 0; i < BENCH_ITERATIONS; i++) {
+		kfree(kmalloc(128, GFP_NOWAIT));
+	}
+
+	after = rdtsc_ordered();
+	cond_resched();
+
+	pr_info("kmalloc/kfree !memcg: %12llu cycles\n", after - before);
+
+	before = rdtsc_ordered();
+
+	for (unsigned long i = 0; i < BENCH_ITERATIONS; i++) {
+		kfree(kmalloc(128, GFP_NOWAIT | __GFP_ACCOUNT));
+	}
+
+	after = rdtsc_ordered();
+	cond_resched();
+
+	pr_info("kmalloc/kfree memcg:  %12llu cycles\n", after - before);
+
+	}
 }
 
 static void test_clobber_zone(struct kunit *test)
@@ -243,6 +277,7 @@ static int test_init(struct kunit *test)
 }
 
 static struct kunit_case test_cases[] = {
+	KUNIT_CASE(test_bench),
 	KUNIT_CASE(test_clobber_zone),
 
 #ifndef CONFIG_KASAN
