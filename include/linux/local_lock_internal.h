@@ -17,15 +17,8 @@ typedef struct {
 
 /* local_trylock() and local_trylock_irqsave() only work with local_trylock_t */
 typedef struct {
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	struct lockdep_map	dep_map;
-	struct task_struct	*owner;
-#endif
-	/*
-	 * Same layout as local_lock_t with 'acquired' field at the end.
-	 * (local_trylock_t *) will be cast to (local_lock_t *).
-	 */
-	int acquired;
+	local_lock_t	llock;
+	int		acquired;
 } local_trylock_t;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
@@ -36,6 +29,9 @@ typedef struct {
 		.lock_type = LD_LOCK_PERCPU,		\
 	},						\
 	.owner = NULL,
+
+# define LOCAL_TRYLOCK_DEBUG_INIT(lockname)		\
+	.llock = { LOCAL_LOCK_DEBUG_INIT((lockname).llock) },
 
 static inline void local_lock_acquire(local_lock_t *l)
 {
@@ -64,6 +60,7 @@ static inline void local_lock_debug_init(local_lock_t *l)
 }
 #else /* CONFIG_DEBUG_LOCK_ALLOC */
 # define LOCAL_LOCK_DEBUG_INIT(lockname)
+# define LOCAL_TRYLOCK_DEBUG_INIT(lockname)
 static inline void local_lock_acquire(local_lock_t *l) { }
 static inline void local_trylock_acquire(local_lock_t *l) { }
 static inline void local_lock_release(local_lock_t *l) { }
@@ -71,6 +68,7 @@ static inline void local_lock_debug_init(local_lock_t *l) { }
 #endif /* !CONFIG_DEBUG_LOCK_ALLOC */
 
 #define INIT_LOCAL_LOCK(lockname)	{ LOCAL_LOCK_DEBUG_INIT(lockname) }
+#define INIT_LOCAL_TRYLOCK(lockname)	{ LOCAL_TRYLOCK_DEBUG_INIT(lockname) }
 
 #define __local_lock_init(lock)					\
 do {								\
@@ -80,8 +78,10 @@ do {								\
 	lockdep_init_map_type(&(lock)->dep_map, #lock, &__key,  \
 			      0, LD_WAIT_CONFIG, LD_WAIT_INV,	\
 			      LD_LOCK_PERCPU);			\
-	local_lock_debug_init((local_lock_t *)lock);		\
+	local_lock_debug_init(lock);				\
 } while (0)
+
+#define __local_trylock_init(lock) __local_lock_init(lock.llock)
 
 #define __spinlock_nested_bh_init(lock)				\
 do {								\
@@ -215,11 +215,14 @@ typedef spinlock_t local_lock_t;
 typedef spinlock_t local_trylock_t;
 
 #define INIT_LOCAL_LOCK(lockname) __LOCAL_SPIN_LOCK_UNLOCKED((lockname))
+#define INIT_LOCAL_TRYLOCK(lockname) __LOCAL_SPIN_LOCK_UNLOCKED((lockname))
 
 #define __local_lock_init(l)					\
 	do {							\
 		local_spin_lock_init((l));			\
 	} while (0)
+
+#define __local_trylock_init(l)			__local_lock_init(l)
 
 #define __local_lock(__lock)					\
 	do {							\
