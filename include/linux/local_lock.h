@@ -52,6 +52,11 @@
 	__local_unlock_irqrestore(lock, flags)
 
 /**
+ * local_lock_init - Runtime initialize a lock instance
+ */
+#define local_trylock_init(lock)	__local_trylock_init(lock)
+
+/**
  * local_trylock - Try to acquire a per CPU local lock
  * @lock:	The lock variable
  *
