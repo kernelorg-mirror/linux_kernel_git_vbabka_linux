@@ -82,7 +82,8 @@ void *kmem_cache_alloc_lru(struct kmem_cache *cachep, struct list_lru *lru,
 
 	if (!(gfp & __GFP_DIRECT_RECLAIM)) {
 		if (!cachep->non_kernel) {
-			cachep->exec_callback = true;
+			if (cachep->callback)
+				cachep->exec_callback = true;
 			return NULL;
 		}
 
@@ -236,6 +237,8 @@ int kmem_cache_alloc_bulk(struct kmem_cache *cachep, gfp_t gfp, size_t size,
 		for (i = 0; i < size; i++)
 			__kmem_cache_free_locked(cachep, p[i]);
 		pthread_mutex_unlock(&cachep->lock);
+		if (cachep->callback)
+			cachep->exec_callback = true;
 		return 0;
 	}
 
@@ -288,9 +291,8 @@ kmem_cache_prefill_sheaf(struct kmem_cache *s, gfp_t gfp, unsigned int size)
 		capacity = s->sheaf_capacity;
 
 	sheaf = malloc(sizeof(*sheaf) + sizeof(void *) * s->sheaf_capacity * capacity);
-	if (!sheaf) {
+	if (!sheaf)
 		return NULL;
-	}
 
 	memset(sheaf, 0, size);
 	sheaf->cache = s;
