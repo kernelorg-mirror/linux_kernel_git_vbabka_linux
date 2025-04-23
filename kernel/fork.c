@@ -3216,6 +3216,7 @@ void __init proc_caches_init(void)
 	struct kmem_cache_args args = {
 		.use_freeptr_offset = true,
 		.freeptr_offset = offsetof(struct vm_area_struct, vm_freeptr),
+		.sheaf_capacity = 32,
 	};
 
 	sighand_cachep = kmem_cache_create("sighand_cache",
