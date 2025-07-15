@@ -7234,6 +7234,37 @@ static int show_stat(struct kmem_cache *s, char *buf, enum stat_item si)
 	return len;
 }
 
+static unsigned long get_stat_sum(struct kmem_cache *s, enum stat_item si)
+{
+	unsigned long sum = 0;
+	int cpu;
+
+	for_each_online_cpu(cpu) {
+		sum +=  per_cpu_ptr(s->cpu_slab, cpu)->stat[si];
+	}
+
+	return sum;
+}
+
+void kmem_cache_print_stats(struct kmem_cache *s)
+{
+	unsigned long afast, aslow, ffast, fslow;
+	unsigned long apcs = 0, fpcs = 0;
+
+	afast = get_stat_sum(s, ALLOC_FASTPATH);
+	aslow = get_stat_sum(s, ALLOC_SLOWPATH);
+	ffast = get_stat_sum(s, FREE_FASTPATH);
+	fslow = get_stat_sum(s, FREE_SLOWPATH);
+#ifdef SLUB_HAS_SHEAVES
+	apcs = get_stat_sum(s, ALLOC_PCS);
+	fpcs = get_stat_sum(s, FREE_PCS);
+#endif
+	pr_info("allocs: pcs %lu fast %lu slow %lu\n", apcs, afast, aslow);
+	pr_info("frees: pcs %lu fast %lu slow %lu\n", fpcs, ffast, fslow);
+}
+
+EXPORT_SYMBOL(kmem_cache_print_stats);
+
 static void clear_stat(struct kmem_cache *s, enum stat_item si)
 {
 	int cpu;

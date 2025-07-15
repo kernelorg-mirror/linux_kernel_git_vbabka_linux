@@ -469,6 +469,12 @@ struct slabinfo {
 
 void get_slabinfo(struct kmem_cache *s, struct slabinfo *sinfo);
 
+#ifdef CONFIG_SLUB_STATS
+void kmem_cache_print_stats(struct kmem_cache *s);
+#else
+static inline void kmem_cache_print_stats(struct kmem_cache *s) { };
+#endif
+
 #ifdef CONFIG_SLUB_DEBUG
 #ifdef CONFIG_SLUB_DEBUG_ON
 DECLARE_STATIC_KEY_TRUE(slub_debug_enabled);
