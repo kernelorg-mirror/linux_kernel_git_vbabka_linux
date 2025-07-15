@@ -8,6 +8,7 @@
 #include <linux/rcupdate.h>
 #include <linux/delay.h>
 #include <linux/perf_event.h>
+#include <asm/timex.h>
 #include "../mm/slab.h"
 
 static struct kunit_resource resource;
@@ -380,6 +381,112 @@ cleanup:
 }
 #endif
 
+static void shuffled_array(unsigned int *list, unsigned int count)
+{
+	unsigned int rand;
+	unsigned int i;
+
+	for (i = 0; i < count; i++)
+		list[i] = i;
+
+	/* Fisher-Yates shuffle */
+	for (i = count - 1; i > 0; i--) {
+		rand = get_random_u32_below(i + 1);
+		swap(list[i], list[rand]);
+	}
+}
+
+static unsigned long long
+do_bench(struct kmem_cache *s, int iters, int total, int batch, bool shuffle)
+{
+	void **ptrs;
+	cycles_t start, end;
+	cycles_t sum = 0;
+	unsigned int *rndidx;
+
+	ptrs = kmalloc_array(batch, sizeof(void *), GFP_KERNEL);
+	if (shuffle)
+		rndidx = kmalloc_array(batch, sizeof(unsigned int), GFP_KERNEL);
+
+	for (int iter = 0; iter < iters + 1; iter++) {
+		if (shuffle)
+			shuffled_array(rndidx, batch);
+
+		start = get_cycles();
+
+		if (!shuffle) {
+			for (int i = 0; i < total / batch; i++) {
+				for (int j = 0; j < batch; j++)
+					ptrs[j] = kmem_cache_alloc(s, GFP_KERNEL);
+				for (int j = 0; j < batch; j++)
+					kmem_cache_free(s, ptrs[j]);
+			}
+		} else {
+			for (int i = 0; i < total / batch; i++) {
+				for (int j = 0; j < batch; j++)
+					ptrs[j] = kmem_cache_alloc(s, GFP_KERNEL);
+				for (int j = 0; j < batch; j++)
+					kmem_cache_free(s, ptrs[rndidx[j]]);
+			}
+		}
+
+		end = get_cycles();
+
+		pr_info("iteration: %02d time %llu\n", iter,
+				(unsigned long long) end - start);
+		if (iter != 0)
+			sum += end - start;
+	}
+
+	pr_info("average (excl. iter 0): %llu\n",
+			(unsigned long long) sum / iters);
+
+	if (shuffle)
+		kfree(rndidx);
+	kfree(ptrs);
+
+	kmem_cache_print_stats(s);
+
+	return sum / iters;
+}
+
+static void test_bench(struct kunit *test)
+{
+	struct kmem_cache *s;
+	bool shuffle = false;
+	unsigned long long base;
+
+shuffled:
+	for (int batch = 1; batch <= 1000; batch *= 10) {
+
+		if (batch == 1 && shuffle)
+			continue;
+
+		pr_info("\n---------------------------------\n");
+		pr_info("BATCH SIZE: %d SHUFFLED: %s\n", batch, shuffle ? "YES" : "NO");
+		pr_info("---------------------------------\n\n");
+
+		s = test_kmem_cache_create("TestSlub_bench", 64, SLAB_NO_MERGE);
+
+		pr_info("bench: no memcg\n");
+		base = do_bench(s, 10, 1000000, batch, shuffle);
+
+		kmem_cache_destroy(s);
+
+		s = test_kmem_cache_create("TestSlub_bench", 64, SLAB_NO_MERGE | SLAB_ACCOUNT);
+
+		pr_info("bench: memcg\n");
+		base = do_bench(s, 10, 1000000, batch, shuffle);
+
+		kmem_cache_destroy(s);
+	}
+
+	if (!shuffle) {
+		shuffle = true;
+		goto shuffled;
+	}
+}
+
 static int test_init(struct kunit *test)
 {
 	slab_errors = 0;
@@ -407,6 +514,7 @@ static struct kunit_case test_cases[] = {
 #ifdef CONFIG_PERF_EVENTS
 	KUNIT_CASE_SLOW(test_kmalloc_kfree_nolock),
 #endif
+	KUNIT_CASE_SLOW(test_bench),
 	{}
 };
 
