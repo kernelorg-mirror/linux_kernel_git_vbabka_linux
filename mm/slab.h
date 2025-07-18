@@ -12,6 +12,8 @@
 #include <linux/kfence.h>
 #include <linux/kasan.h>
 
+#define SLUB_HAS_SHEAVES 1
+
 /*
  * Internal slab definitions
  */
