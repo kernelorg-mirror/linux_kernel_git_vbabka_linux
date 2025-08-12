@@ -15,10 +15,9 @@
 #define MODULE_LICENSE(x)
 #define dump_stack()	assert(0)
 
-#include "maple-shared.h"
 #include "test.h"
 
-#include "../../../lib/maple_tree.c"
+#include "../shared/maple-shim.c"
 #include "../../../lib/test_maple_tree.c"
 
 #define RCU_RANGE_COUNT 1000
