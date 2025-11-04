@@ -762,10 +762,12 @@ __update_freelist_fast(struct slab *slab,
 		      void *freelist_new, unsigned long counters_new)
 {
 #ifdef system_has_freelist_aba
-	freelist_aba_t old = { .freelist = freelist_old, .counter = counters_old };
-	freelist_aba_t new = { .freelist = freelist_new, .counter = counters_new };
+	freelist_aba_t old = { .freelist = freelist_old, .counters = counters_old };
+	freelist_aba_t new = { .freelist = freelist_new, .counters = counters_new };
 
-	return try_cmpxchg_freelist(&slab->freelist_counter.full, &old.full, new.full);
+	return try_cmpxchg_freelist(&slab->freelist_counters,
+				    &old.freelist_counters,
+				    new.freelist_counters);
 #else
 	return false;
 #endif

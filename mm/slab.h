@@ -43,9 +43,23 @@ typedef u64 freelist_full_t;
 typedef union {
 	struct {
 		void *freelist;
-		unsigned long counter;
+		union {
+			unsigned long counters;
+			struct {
+				unsigned inuse:16;
+				unsigned objects:15;
+				/*
+				 * If slab debugging is enabled then the
+				 * frozen bit can be reused to indicate
+				 * that the slab was corrupted
+				 */
+				unsigned frozen:1;
+			};
+		};
 	};
-	freelist_full_t full;
+#ifdef system_has_freelist_aba
+	freelist_full_t freelist_counters;
+#endif
 } freelist_aba_t;
 
 /* Reuses the bits in struct page */
@@ -69,27 +83,7 @@ struct slab {
 #endif
 			};
 			/* Double-word boundary */
-			union {
-				struct {
-					void *freelist;		/* first free object */
-					union {
-						unsigned long counters;
-						struct {
-							unsigned inuse:16;
-							unsigned objects:15;
-							/*
-							 * If slab debugging is enabled then the
-							 * frozen bit can be reused to indicate
-							 * that the slab was corrupted
-							 */
-							unsigned frozen:1;
-						};
-					};
-				};
-#ifdef system_has_freelist_aba
-				freelist_aba_t freelist_counter;
-#endif
-			};
+			freelist_aba_t;
 		};
 		struct rcu_head rcu_head;
 	};
