@@ -776,7 +776,7 @@ static __init bool need_page_alloc_tagging(void)
  * If insufficient, a warning will be triggered to alert the user.
  *
  * TODO: Replace fixed-size array with dynamic allocation using
- * a GFP flag similar to ___GFP_NO_OBJ_EXT to avoid recursion.
+ * something similar to slab's SLAB_ALLOC_NO_RECURSE to avoid recursion.
  */
 #define EARLY_ALLOC_PFN_MAX		8192
 
