@@ -20,6 +20,7 @@
 #define SLAB_ALLOC_DEFAULT	0x00
 #define SLAB_ALLOC_TRYLOCK	0x01
 #define SLAB_ALLOC_NEW_SLAB	0x02 /* a flag for alloc_slab_obj_exts() */
+#define SLAB_ALLOC_NO_RECURSE	0x04 /* prevent kmalloc() recursion */
 
 static inline bool alloc_flags_allow_spinning(const unsigned int alloc_flags)
 {
