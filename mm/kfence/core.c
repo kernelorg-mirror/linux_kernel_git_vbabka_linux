@@ -499,9 +499,9 @@ static void *kfence_guarded_alloc(struct kmem_cache *cache, size_t size, gfp_t g
 	set_canary(meta);
 
 	/*
-	 * We check slab_want_init_on_alloc() ourselves, rather than letting
-	 * SL*B do the initialization, as otherwise we might overwrite KFENCE's
-	 * redzone.
+	 * SLUB will generally init kfence objects, but due to possible
+	 * interactions with KASAN, it might not happen, so do it ourselves.
+	 * In the worst case the init just happens twice.
 	 */
 	if (unlikely(slab_want_init_on_alloc(gfp, cache)))
 		memzero_explicit(addr, size);
