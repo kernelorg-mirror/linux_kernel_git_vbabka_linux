@@ -3426,6 +3426,10 @@ static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags,
 	slab->objects = oo_objects(oo);
 	slab->inuse = 0;
 	slab->frozen = 0;
+#ifdef CONFIG_64BIT
+	if (cache_needs_objcg(s))
+		slab->obj_exts_needs_objcg = 1;
+#endif
 
 	slab->slab_cache = s;
 
